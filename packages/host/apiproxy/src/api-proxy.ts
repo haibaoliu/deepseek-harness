@@ -5,7 +5,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { mkdir, stat } from 'node:fs/promises'
-import { dirname } from 'node:path'
+import { dirname, join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { installModelSelection } from '@deepseek-ai/dsh-agent'
 import type { Agent, ModelSelection, ModelSelectionRef, AgentOptions, AgentStatus } from '@deepseek-ai/dsh-agent'
@@ -747,6 +747,12 @@ export interface ApiProxyDefaults {
   saveDefaultModelSelection?: (selection: ModelSelection) => Promise<void>
   /** Default project directory for new sessions whose create request carries no cwd. */
   cwd: string
+  /**
+   * Root under which a workspace-less temporary session gets a fresh scratch
+   * directory for its cwd. Absent falls back to {@link cwd} (the legacy
+   * shared default).
+   */
+  temporarySessionRoot?: string
   /** Native open-with-default-application; injectable for carrier tests. */
   openPath?: (path: string, signal: AbortSignal) => Promise<void>
   /** Native text-editor handoff; injectable for settings-document tests. */
@@ -2281,7 +2287,11 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
             })
           }
         }
-        const cwd = workspace?.path ?? request.payload.cwd ?? defaults.cwd
+        const cwd = workspace?.path
+          ?? request.payload.cwd
+          ?? (defaults.temporarySessionRoot === undefined
+            ? defaults.cwd
+            : join(defaults.temporarySessionRoot, randomUUID()))
         const requestedPreset = request.payload.agentPreset
         try {
           await ensureSession(sessionId, cwd, request.payload.sessionId !== undefined, requestedPreset)

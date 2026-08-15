@@ -64,6 +64,7 @@ async function harness(
   extras: {
     openPath?: (path: string, signal: AbortSignal) => Promise<void>
     canOpenPath?: () => boolean
+    temporarySessionRoot?: string
   } = {},
 ) {
   const ctx = new Context()
@@ -107,6 +108,7 @@ async function harness(
     cwd: root,
     ...extras.openPath === undefined ? {} : { openPath: extras.openPath },
     ...extras.canOpenPath === undefined ? {} : { canOpenPath: extras.canOpenPath },
+    ...extras.temporarySessionRoot === undefined ? {} : { temporarySessionRoot: extras.temporarySessionRoot },
   })
   return { api, ctx, storageDomain, root }
 }
@@ -389,6 +391,28 @@ describe('session creation and Workspace membership', () => {
       sessionId: SessionId('session-missing-workspace'),
     }))
     expect(missing.result).toMatchObject({ ok: false, error: { code: 'workspace-not-found' } })
+  })
+
+  it('gives each workspace-less temporary session its own scratch directory', async () => {
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'dsh-apiproxy-tmp-session-')))
+    const temporarySessionRoot = join(root, 'tmp-sessions')
+    const { api, ctx } = await harness(root, { kind: 'native', pick: async () => null }, { temporarySessionRoot })
+
+    const first = expectOk(await api.sessions.create(request({ sessionId: SessionId('tmp-a') })))
+    const firstCwd = ctx.sessions.get(first.sessionId)?.header.cwd
+    expect(firstCwd?.startsWith(`${temporarySessionRoot}/`)).toBe(true)
+    expect(existsSync(firstCwd as string)).toBe(true)
+
+    const second = expectOk(await api.sessions.create(request({ sessionId: SessionId('tmp-b') })))
+    const secondCwd = ctx.sessions.get(second.sessionId)?.header.cwd
+    expect(secondCwd?.startsWith(`${temporarySessionRoot}/`)).toBe(true)
+    expect(secondCwd).not.toBe(firstCwd)
+
+    // A cwd-only create still honors the explicit directory, not the scratch root.
+    const explicit = join(root, 'explicit')
+    mkdirSync(explicit)
+    const cwdSession = expectOk(await api.sessions.create(request({ cwd: explicit, sessionId: SessionId('tmp-cwd') })))
+    expect(ctx.sessions.get(cwdSession.sessionId)?.header.cwd).toBe(explicit)
   })
 
   it('retains a published session when attachment fails and repairs it on retry', async () => {
