@@ -286,20 +286,32 @@ describe('ConversationRoot resident composer', () => {
     expect(seat('conversation.input.plan')).toEqual({ locked: true })
   })
 
-  it('lets the no-workspace posture win over a block', () => {
-    // Picking a workspace is the earlier prerequisite; naming a model first
-    // would send the user somewhere they cannot act yet.
+  it('lets a block apply to a workspace-less session, which is otherwise typeable', () => {
+    // A workspace-less session is a live chat, so the raised block (not a
+    // workspace picker) is what disables it — picking a model is the remaining
+    // prerequisite, and the model seat stays live to clear it.
     const b = mount(conversationSnapshot({ composerPhase: 'blank' }), [], undefined, {
       summaryBlank: true,
       composerBlock: { reason: 'select a model first' },
     })
     const box = b.view.getByRole('textbox') as HTMLTextAreaElement
-    expect(box.disabled).toBe(false)
-    expect(box.readOnly).toBe(true)
-    expect(box.getAttribute('aria-haspopup')).toBe('menu')
-    expect(box.placeholder).not.toBe('select a model first')
+    expect(box.disabled).toBe(true)
+    expect(box.readOnly).toBe(false)
+    expect(box.placeholder).toBe('select a model first')
     const modelSeat = b.seatOwners.filter(call => call.key === 'conversation.input.model').at(-1)?.owner
-    expect(modelSeat).toEqual({ locked: true })
+    expect(modelSeat).toEqual({ locked: false })
+  })
+
+  it('keeps a workspace-less blank session typeable instead of gating on a workspace picker', () => {
+    const b = mount(conversationSnapshot({ composerPhase: 'blank' }), [], undefined, {
+      summaryBlank: true,
+    })
+    const box = b.view.getByRole('textbox') as HTMLTextAreaElement
+    expect(box.disabled).toBe(false)
+    expect(box.readOnly).toBe(false)
+    expect(box.getAttribute('aria-haspopup')).toBeNull()
+    fireEvent.change(box, { target: { value: 'hello temporary' } })
+    expect(b.chat.store.getSnapshot().draft).toBe('hello temporary')
   })
 
   it('keeps composer text in the machine, mirrors to the chat store, and submits through the sink', () => {
