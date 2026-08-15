@@ -1,6 +1,6 @@
 /** Conversation slot declarations and their composed component props. */
 import type { ReactNode, RefObject } from 'react'
-import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
+import type { DocumentMediaType, ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import type {
   InjectFace, MaybeSnapshotSelectorHook, PropsLocale, PropsRenderSlots, PropsRuntime, PropsStore,
   SlotHookFactory, SnapshotSelectorHook,
@@ -22,13 +22,10 @@ import type { ComposerSubmitGesture, InputSubmitMode } from './composer-submissi
 import type { ChatNode, ChatNodeKind } from './chat-nodes.ts'
 import type { CallId, SelectionTarget, ViewTab } from './views.ts'
 
-/** Browser-owned image that has not crossed the durable host boundary. */
-export interface ComposerAttachment {
-  kind: 'image'
-  id: DraftAttachmentId
-  file: File
-  previewUrl: string
-}
+/** Browser-owned attachment that has not crossed the durable host boundary. */
+export type ComposerAttachment =
+  | { kind: 'image'; id: DraftAttachmentId; file: File; previewUrl: string }
+  | { kind: 'document'; id: DraftAttachmentId; file: File; mediaType: DocumentMediaType }
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface SlotMap {

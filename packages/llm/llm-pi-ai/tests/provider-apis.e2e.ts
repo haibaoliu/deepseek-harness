@@ -3,9 +3,14 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { AttachmentId, AttachmentStore } from '@deepseek-ai/dsh-attachment'
 import type {
+  DocumentAttachmentLimits,
+  DocumentAttachmentRef,
   ImageAttachmentLimits,
   ImageAttachmentRef,
+  SaveDocumentAttachment,
+  SavedDocumentAttachment,
   SaveImageAttachment,
+  StoredDocumentAttachment,
   StoredImageAttachment,
 } from '@deepseek-ai/dsh-attachment'
 import LlmRuntime, { createUserMessage, CallId } from '@deepseek-ai/dsh-llm'
@@ -71,6 +76,25 @@ async function harness(image?: StoredImageAttachment): Promise<Context> {
         maxMessageImageBytes: fixture.data.byteLength,
         maxImagePixels: fixture.ref.width * fixture.ref.height,
         mediaTypes: [fixture.ref.mediaType],
+      }
+
+      readonly documentLimits: DocumentAttachmentLimits = {
+        maxDocumentBytes: 1,
+        maxDocumentsPerMessage: 1,
+        maxMessageDocumentBytes: 1,
+        mediaTypes: [],
+      }
+
+      validateDocument(_input: SaveDocumentAttachment): Promise<void> {
+        return Promise.reject(new Error('e2e attachment fixture is read-only'))
+      }
+
+      saveDocument(_input: SaveDocumentAttachment): Promise<SavedDocumentAttachment> {
+        return Promise.reject(new Error('e2e attachment fixture is read-only'))
+      }
+
+      readDocument(_ref: DocumentAttachmentRef): Promise<StoredDocumentAttachment> {
+        return Promise.reject(new Error('e2e attachment fixture is read-only'))
       }
 
       validateImage(_input: SaveImageAttachment): Promise<void> {

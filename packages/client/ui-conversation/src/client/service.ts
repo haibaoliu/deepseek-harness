@@ -13,7 +13,7 @@ import type { Context } from '@deepseek-ai/cordis'
 // error, so scope resolution goes through the sessions service (scopeOf
 // method) instead of the standalone helper.
 import type { ISessions, SessionFace, SessionId } from '@deepseek-ai/dsh-client-runtime/client'
-import type { ImageAttachmentRef, ImageMediaType } from '@deepseek-ai/dsh-attachment'
+import type { DocumentMediaType, ImageAttachmentRef, ImageMediaType } from '@deepseek-ai/dsh-attachment'
 import type { ComposerAttachment } from './contract/slots.ts'
 import type { QueueAction, QueueItemId } from './contract/queue.ts'
 import type { ComposerBlocks } from './input/blocks.ts'
@@ -58,13 +58,44 @@ export interface IConversation {
   loadOlder(): Promise<void>
 }
 
-/** Create one browser-only draft descriptor; only its id enters input state. */
-function browserDraftAttachment(file: File): ComposerAttachment {
-  return {
-    kind: 'image',
-    id: crypto.randomUUID() as DraftAttachmentId,
-    previewUrl: URL.createObjectURL(file),
-    file,
+/** Document media types accepted at intake; mirrors the host's documentLimits. */
+const DOCUMENT_MEDIA_TYPES: readonly DocumentMediaType[] = [
+  'text/markdown',
+  'application/pdf',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+] as const
+
+/** Extension-only fallbacks for document types the browser reports without a MIME. */
+const DOCUMENT_EXTENSIONS: Readonly<Record<string, DocumentMediaType>> = {
+  '.md': 'text/markdown',
+  '.markdown': 'text/markdown',
+  '.pdf': 'application/pdf',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+}
+
+/** Resolve a browser file's document media type from its MIME, then its extension. */
+function documentMediaType(file: File): DocumentMediaType | undefined {
+  if ((DOCUMENT_MEDIA_TYPES as readonly string[]).includes(file.type)) return file.type as DocumentMediaType
+  const dot = file.name.lastIndexOf('.')
+  if (dot >= 0) return DOCUMENT_EXTENSIONS[file.name.slice(dot).toLowerCase()]
+  return undefined
+}
+
+/** One browser file classified as an accepted image or document. */
+type ClassifiedMediaType =
+  | { kind: 'image'; value: ImageMediaType }
+  | { kind: 'document'; value: DocumentMediaType }
+
+/** Classify a browser file, throwing {@link UnsupportedImageMediaTypeError} when it is neither. */
+function classifyMediaType(file: File): ClassifiedMediaType {
+  try {
+    return { kind: 'image', value: imageMediaType(file.type) }
+  } catch (imageError) {
+    const value = documentMediaType(file)
+    if (value === undefined) throw imageError
+    return { kind: 'document', value }
   }
 }
 
@@ -149,7 +180,7 @@ export class ConversationController extends Service implements IConversation {
     if (attachments.length !== imageIds.length) {
       throw new Error('conversation.sendSession: one or more draft images are no longer available')
     }
-    const uploaded = await this.serializeImages(attachments.map(attachment => attachment.file))
+    const uploaded = await this.serializeAttachments(attachments)
     const content = [...uploaded, ...(text === '' ? [] : [{ type: 'text' as const, text }])]
     const result = await session.prompt(content, mode)
     if (!result.ok) throw new Error(`conversation.send failed: ${result.error.code}: ${result.error.message}`)
@@ -162,11 +193,16 @@ export class ConversationController extends Service implements IConversation {
    * @returns ordered draft descriptors.
    */
   createDraftImages(files: readonly File[]): readonly ComposerAttachment[] {
-    for (const file of files) imageMediaType(file.type)
-    return files.map((file) => {
-      const attachment = browserDraftAttachment(file)
+    // Classify every file before mutating the registry: a batch with one
+    // unsupported file must create zero descriptors (atomic intake).
+    const classified = files.map(file => ({ file, mediaType: classifyMediaType(file) }))
+    return classified.map(({ file, mediaType }) => {
+      const id = crypto.randomUUID() as DraftAttachmentId
+      const attachment: ComposerAttachment = mediaType.kind === 'image'
+        ? { kind: 'image', id, previewUrl: URL.createObjectURL(file), file }
+        : { kind: 'document', id, file, mediaType: mediaType.value }
       this.draftAttachments.set(attachment.id, attachment)
-      this.createdImageUrls.add(attachment.previewUrl)
+      if (attachment.kind === 'image') this.createdImageUrls.add(attachment.previewUrl)
       return attachment
     })
   }
@@ -193,8 +229,10 @@ export class ConversationController extends Service implements IConversation {
     const attachment = this.draftAttachments.get(id)
     if (attachment === undefined) return
     this.draftAttachments.delete(id)
-    this.createdImageUrls.delete(attachment.previewUrl)
-    revokePreview(attachment.previewUrl)
+    if (attachment.kind === 'image') {
+      this.createdImageUrls.delete(attachment.previewUrl)
+      revokePreview(attachment.previewUrl)
+    }
   }
 
   /**
@@ -312,14 +350,16 @@ export class ConversationController extends Service implements IConversation {
     return sessions
   }
 
-  /** Convert browser files to canonical base64 prompt parts. */
-  private serializeImages(images: readonly File[]): Promise<Parameters<SessionFace['prompt']>[0]> {
-    return Promise.all(images.map(async file => ({
-      type: 'image' as const,
-      mediaType: imageMediaType(file.type),
-      data: bytesToBase64(new Uint8Array(await file.arrayBuffer())),
-      ...(file.name === '' ? {} : { name: file.name }),
-    })))
+  /** Convert browser draft attachments to canonical base64 prompt parts. */
+  private serializeAttachments(attachments: readonly ComposerAttachment[]): Promise<Parameters<SessionFace['prompt']>[0]> {
+    return Promise.all(attachments.map(async (attachment) => {
+      const data = bytesToBase64(new Uint8Array(await attachment.file.arrayBuffer()))
+      const name = attachment.file.name === '' ? {} : { name: attachment.file.name }
+      if (attachment.kind === 'image') {
+        return { type: 'image' as const, mediaType: imageMediaType(attachment.file.type), data, ...name }
+      }
+      return { type: 'document' as const, mediaType: attachment.mediaType, data, ...name }
+    }))
   }
 }
 

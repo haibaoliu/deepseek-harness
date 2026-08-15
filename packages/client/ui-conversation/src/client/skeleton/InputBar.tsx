@@ -10,7 +10,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent, KeyboardEvent, MouseEvent, ReactNode } from 'react'
 import clsx from 'clsx'
 import {
-  IconPlusOutline16, IconWarningOutline16, Toast, Tooltip,
+  IconPaperclipOutline16, IconPlusOutline16, IconWarningOutline16, Toast, Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import { AttachmentRail, DropOverlay, ImageLightbox } from '@deepseek-ai/dsh-client-ui-attachment'
 import type { AttachmentRailItem } from '@deepseek-ai/dsh-client-ui-attachment'
@@ -73,7 +73,7 @@ export function InputBar({
     [draftImages, input?.imageIds],
   )
   const empty = draft.trim() === '' && attachments.length === 0
-  const [preview, setPreview] = useState<ComposerAttachment | null>(null)
+  const [preview, setPreview] = useState<Extract<ComposerAttachment, { kind: 'image' }> | null>(null)
   const [dragActive, setDragActive] = useState(false)
   // Transient error banner (image-intake rejections and prompt failures): the
   // seq keys the Toast so an identical repeated message restarts the
@@ -102,6 +102,7 @@ export function InputBar({
       : `${promptError.error.message} (${promptError.error.code})`)
   }, [promptError, showToast, t, imageLimits])
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
   const cardRef = useRef<HTMLDivElement | null>(null)
   const dragDepthRef = useRef(0)
   const scrollRef = useRef<HTMLDivElement | null>(null)
@@ -424,20 +425,20 @@ export function InputBar({
   const intakeImages = useCallback((files: readonly File[]): void => {
     if (addImages === undefined || files.length === 0) return
     const rejected = ((): string | null => {
-      if (imageLimits !== undefined) {
-        // Format precedes limits (DeepSeek Chat's filter order): a batch with
-        // a non-image must announce the format problem, not a count or size
-        // it could never pass anyway — addImages rejects it authoritatively.
-        if (files.some(file => !(imageLimits.mediaTypes as readonly string[]).includes(file.type))) {
-          return addImages(files)
-        }
-        if (attachments.length + files.length > imageLimits.maxImagesPerMessage) {
+      // The early image pre-check applies only to a pure-image batch; a batch
+      // containing documents or unknown types defers to addImages, which
+      // classifies each file authoritatively (images, documents, or reject).
+      const pureImages = imageLimits !== undefined
+        && files.every(file => (imageLimits.mediaTypes as readonly string[]).includes(file.type))
+      if (pureImages) {
+        const imageAttachments = attachments.filter(attachment => attachment.kind === 'image')
+        if (imageAttachments.length + files.length > imageLimits.maxImagesPerMessage) {
           return t('image.tooMany', { count: imageLimits.maxImagesPerMessage })
         }
         if (files.some(file => file.size > imageLimits.maxImageBytes)) {
           return t('image.fileTooLarge', { size: imageSizeText(imageLimits.maxImageBytes) })
         }
-        const total = attachments.reduce((sum, attachment) => sum + attachment.file.size, 0)
+        const total = imageAttachments.reduce((sum, attachment) => sum + attachment.file.size, 0)
           + files.reduce((sum, file) => sum + file.size, 0)
         if (total > imageLimits.maxMessageImageBytes) {
           return t('image.totalTooLarge', { size: imageSizeText(imageLimits.maxMessageImageBytes) })
@@ -447,6 +448,18 @@ export function InputBar({
     })()
     if (rejected !== null) showToast(rejected)
   }, [addImages, attachments, imageLimits, showToast, t])
+
+  /** Open the system file picker for images and documents. */
+  const pickAttachments = useCallback((): void => {
+    fileInputRef.current?.click()
+  }, [])
+
+  /** Feed the picked files through the shared intake path, then clear so the same file can be re-picked. */
+  const onFilesChosen = useCallback((event: ChangeEvent<HTMLInputElement>): void => {
+    const files = Array.from(event.target.files ?? [])
+    intakeImages(files)
+    event.target.value = ''
+  }, [intakeImages])
 
   // Whole-page file-drop intake (DeepSeek Chat behavior): the listeners live
   // on the document so a drop anywhere over the window adds images, not only
@@ -509,13 +522,22 @@ export function InputBar({
 
   // Rail thumbnails with their strings resolved here: the attachment atoms are
   // zero-cordis and read no locale.
-  const railItems = useMemo<ComposerRailItem[]>(() => attachments.map(attachment => ({
-    id: attachment.id,
-    previewUrl: attachment.previewUrl,
-    alt: attachment.file.name || t('image.pending'),
-    removeLabel: t('image.remove', { name: attachment.file.name }),
-    attachment,
-  })), [attachments, t])
+  const railItems = useMemo<ComposerRailItem[]>(() => attachments.map(attachment => attachment.kind === 'image'
+    ? {
+      id: attachment.id,
+      kind: 'image' as const,
+      previewUrl: attachment.previewUrl,
+      alt: attachment.file.name || t('image.pending'),
+      removeLabel: t('image.remove', { name: attachment.file.name }),
+      attachment,
+    }
+    : {
+      id: attachment.id,
+      kind: 'document' as const,
+      alt: attachment.file.name,
+      removeLabel: t('image.remove', { name: attachment.file.name }),
+      attachment,
+    }), [attachments, t])
 
   const onSelect = (e: React.SyntheticEvent<HTMLTextAreaElement>): void => {
     // Any caret/selection gesture ends a live paste attempt (the machine
@@ -639,6 +661,14 @@ export function InputBar({
 
   return (
     <div className={clsx(css.root, variant === 'hero' && css.hero)}>
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        hidden
+        accept=".md,.markdown,.pdf,.docx,.pptx,.png,.jpg,.jpeg,.webp,.gif"
+        onChange={onFilesChosen}
+      />
       {dragActive && (
         <DropOverlay
           disabled={!canAcceptDrop}
@@ -681,7 +711,7 @@ export function InputBar({
             <AttachmentRail
               items={railItems}
               labels={attachmentRailLabels(t)}
-              onOpen={(item) => { setPreview(item.attachment) }}
+              onOpen={(item) => { if (item.attachment.kind === 'image') setPreview(item.attachment) }}
               onRemove={(item) => { removeImage?.(item.attachment.id) }}
             />
           </div>
@@ -731,6 +761,18 @@ export function InputBar({
         </div>
         <div className={css.row}>
           <div className={css.tools}>
+            <Tooltip label={t('input.attach')} side="top" delayMs={500}>
+              <button
+                type="button"
+                className={css.add}
+                aria-label={t('input.attach')}
+                disabled={locked || addImages === undefined}
+                onMouseDown={keepFocus}
+                onClick={pickAttachments}
+              >
+                <IconPaperclipOutline16 size={14} />
+              </button>
+            </Tooltip>
             <Tooltip label={t('input.commands')} side="top" delayMs={500}>
               <button
                 type="button"

@@ -12,9 +12,11 @@ import css from './AttachmentRail.module.css'
 export interface AttachmentRailItem {
   /** Stable identity for the React key. */
   id: string
-  /** Object or data URL rendered as the thumbnail. */
-  previewUrl: string
-  /** Image alt text (display name with the owner's fallback applied). */
+  /** Render shape: an image thumbnail (default) or a document name chip. */
+  kind?: 'image' | 'document'
+  /** Object or data URL rendered as the thumbnail; required for images. */
+  previewUrl?: string
+  /** Image alt text or document chip label (display name with the owner's fallback applied). */
   alt: string
   /** Accessible label of the item's remove control. */
   removeLabel: string
@@ -168,11 +170,13 @@ export function AttachmentRail<T extends AttachmentRailItem>({ items, labels, on
           <div key={item.id} className={css.item}>
             <button
               type="button"
-              className={css.thumbnail}
+              className={item.kind === 'document' ? clsx(css.thumbnail, css.documentChip) : css.thumbnail}
               title={labels.open}
               onClick={() => { onOpen(item) }}
             >
-              <img src={item.previewUrl} alt={item.alt} />
+              {item.kind === 'document'
+                ? <span className={css.documentChipLabel}>{item.alt}</span>
+                : <img src={item.previewUrl} alt={item.alt} />}
             </button>
             <button
               type="button"

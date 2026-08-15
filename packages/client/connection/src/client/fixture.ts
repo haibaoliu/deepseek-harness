@@ -20,7 +20,7 @@ import type {
   ToolResultMessage,
   UserMessage,
 } from '@deepseek-ai/dsh-llm'
-import type { AttachmentIdType, ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
+import type { AttachmentIdType, DocumentAttachmentRef, ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import type {
   SessionEvent,
   SessionId,
@@ -1522,7 +1522,7 @@ function createFixtureWorld(options: FixtureOptions): FixtureWorld {
     session.sessionId,
     { provider: 'deepseek-official', model: 'deepseek-v4-flash' },
   ]))
-  const attachments = new Map<string, { attachment: ImageAttachmentRef; data: string }>([[
+  const attachments = new Map<string, { attachment: ImageAttachmentRef | DocumentAttachmentRef; data: string }>([[
     String(FIXTURE_IMAGE_REF.attachmentId),
     { attachment: FIXTURE_IMAGE_REF, data: FIXTURE_IMAGE_DATA },
   ]])
@@ -2412,22 +2412,37 @@ function createFixtureWorld(options: FixtureOptions): FixtureWorld {
         // First accepted prompt appends events: the summary stops being blank.
         summary.blank = false
         const userText = content.map(b => (b.type === 'text' ? b.text : '')).join('')
-        const durable: ContentBlock[] = content.map((block) => {
-          if (block.type === 'text') return block
-          const attachment: ImageAttachmentRef = {
-            attachmentId: `fixture:${randomUuid()}` as AttachmentIdType,
+        const durable: ContentBlock[] = content.flatMap((block): ContentBlock[] => {
+          if (block.type === 'text') return [block]
+          const attachmentId = `fixture:${randomUuid()}` as AttachmentIdType
+          const bytes = Math.max(
+            1,
+            Math.floor(block.data.length * 3 / 4)
+            - (block.data.endsWith('==') ? 2 : block.data.endsWith('=') ? 1 : 0),
+          )
+          if (block.type === 'image') {
+            const attachment: ImageAttachmentRef = {
+              attachmentId,
+              mediaType: block.mediaType,
+              bytes,
+              width: 160,
+              height: 90,
+              ...block.name === undefined ? {} : { name: block.name },
+            }
+            attachments.set(String(attachment.attachmentId), { attachment, data: block.data })
+            return [{ type: 'image', attachment }]
+          }
+          const attachment: DocumentAttachmentRef = {
+            attachmentId,
             mediaType: block.mediaType,
-            bytes: Math.max(
-              1,
-              Math.floor(block.data.length * 3 / 4)
-              - (block.data.endsWith('==') ? 2 : block.data.endsWith('=') ? 1 : 0),
-            ),
-            width: 160,
-            height: 90,
+            bytes,
             ...block.name === undefined ? {} : { name: block.name },
           }
           attachments.set(String(attachment.attachmentId), { attachment, data: block.data })
-          return { type: 'image', attachment }
+          return [
+            { type: 'text', text: `${block.name ?? 'document'}:\n\n(fixture extracted text)` },
+            { type: 'document', attachment },
+          ]
         })
         if (mode === 'steer' && replays.has(id)) {
           // Steering: the durable user/message lands inside the current turn; the replay continues.

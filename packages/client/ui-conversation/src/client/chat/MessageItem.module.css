@@ -28,6 +28,31 @@
   color: var(--dsw-alias-label-primary);
 }
 
+/* Uploaded document chips above the user bubble (the extracted text rides the
+   bubble itself; the chip names the original file). */
+.documentList {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  max-width: 100%;
+}
+
+.documentChip {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border: 1px solid var(--dsw-alias-border-l2-darkmode-thin);
+  border-radius: 10px;
+  background: var(--dsw-alias-interactive-bg-hover);
+  padding: 3px 10px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-secondary);
+}
+
 .contextRow {
   padding: 2px 0;
 }

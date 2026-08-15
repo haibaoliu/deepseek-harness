@@ -21,7 +21,7 @@ import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
 import * as FsPolicy from '@deepseek-ai/dsh-fs-observation-policy'
 import LocalAttachmentStore from '@deepseek-ai/dsh-attachment-local'
 import { AttachmentId, AttachmentStore } from '@deepseek-ai/dsh-attachment'
-import type { ImageAttachmentLimits, ImageAttachmentRef, SaveImageAttachment, StoredImageAttachment } from '@deepseek-ai/dsh-attachment'
+import type { DocumentAttachmentLimits, DocumentAttachmentRef, ImageAttachmentLimits, ImageAttachmentRef, SaveDocumentAttachment, SavedDocumentAttachment, SaveImageAttachment, StoredDocumentAttachment, StoredImageAttachment } from '@deepseek-ai/dsh-attachment'
 import * as ToolFs from '@deepseek-ai/dsh-tool-fs'
 import {
   applyReadImageTool,
@@ -339,6 +339,25 @@ describe('argument and service preconditions', () => {
         mediaTypes: Object.freeze(['image/jpeg'] as const),
       })
 
+      readonly documentLimits: DocumentAttachmentLimits = Object.freeze({
+        maxDocumentBytes: 1,
+        maxDocumentsPerMessage: 1,
+        maxMessageDocumentBytes: 1,
+        mediaTypes: Object.freeze([] as const),
+      })
+
+      validateDocument(_input: SaveDocumentAttachment): Promise<void> {
+        throw new Error('unreachable in this test')
+      }
+
+      saveDocument(_input: SaveDocumentAttachment): Promise<SavedDocumentAttachment> {
+        throw new Error('unreachable in this test')
+      }
+
+      readDocument(_ref: DocumentAttachmentRef): Promise<StoredDocumentAttachment> {
+        throw new Error('unreachable in this test')
+      }
+
       validateImage(_input: SaveImageAttachment): Promise<void> {
         throw new Error('unreachable: admission refuses before validation')
       }
@@ -417,6 +436,25 @@ describe('image admission failures', () => {
         maxImagePixels: 100,
         mediaTypes: Object.freeze(['image/png'] as const),
       })
+
+      readonly documentLimits: DocumentAttachmentLimits = Object.freeze({
+        maxDocumentBytes: 1,
+        maxDocumentsPerMessage: 1,
+        maxMessageDocumentBytes: 1,
+        mediaTypes: Object.freeze([] as const),
+      })
+
+      validateDocument(_input: SaveDocumentAttachment): Promise<void> {
+        return Promise.resolve()
+      }
+
+      saveDocument(_input: SaveDocumentAttachment): Promise<SavedDocumentAttachment> {
+        throw new Error('unreachable in this test')
+      }
+
+      readDocument(_ref: DocumentAttachmentRef): Promise<StoredDocumentAttachment> {
+        throw new Error('unreachable in this test')
+      }
 
       validateImage(_input: SaveImageAttachment): Promise<void> {
         return Promise.resolve()
