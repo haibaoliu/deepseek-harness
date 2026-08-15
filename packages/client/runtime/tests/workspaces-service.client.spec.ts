@@ -399,7 +399,7 @@ describe('WorkspaceRuntime', () => {
     await expect(workspaces.insertBefore(wid('ghost'))).rejects.toThrow(/workspace-not-found: gone/)
   })
 
-  it('targets New Session at explicit, current-session, then recent Workspaces and clears with none', async () => {
+  it('targets scoped New Session at the explicit Workspace and un-scoped New Session at a temporary session', async () => {
     const ctx = new Context()
     const api = new FakeApiClient()
     const sessions = new SessionRuntime(ctx, api, fakeRemote())
@@ -417,29 +417,45 @@ describe('WorkspaceRuntime', () => {
     await Promise.all([workspaces.refresh(), sessions.refresh()])
     await Promise.resolve()
     sessions.open(sid('current'))
+
+    // Scoped: connects the named Workspace.
     const unresolved = new Promise<SessionId>(() => {})
     const connect = vi.spyOn(workspaces, 'connectWorkspace').mockReturnValue(unresolved)
-
     workspaces.startSession(wid('recent-home'))
     await Promise.resolve()
     expect(connect).toHaveBeenLastCalledWith(wid('recent-home'))
 
+    // Un-scoped: creates a workspace-less temporary session (no workspaceId).
+    const create = vi.fn((_payload: unknown) => Promise.resolve(ok({ sessionId: sid('s-temp') })))
+    api.onCreate = create
+    const open = vi.spyOn(sessions, 'open')
+    workspaces.startSession()
+    expect(create).toHaveBeenCalledWith({})
+    await vi.waitFor(() => expect(open).toHaveBeenLastCalledWith(sid('s-temp')))
+  })
+
+  it('reuses a blank ungrouped session for un-scoped New Session instead of minting another', async () => {
+    const ctx = new Context()
+    const api = new FakeApiClient()
+    const sessions = new SessionRuntime(ctx, api, fakeRemote())
+    const workspaces = new WorkspaceRuntime(ctx, api, sessions)
+    api.onWorkspaceList = () => Promise.resolve(ok({
+      items: [workspace('alpha', [sid('s-member')])] as never[],
+    }))
+    api.onList = () => Promise.resolve(ok({ items: [
+      { sessionId: sid('s-member'), updatedAt: 1, running: false, blank: false },
+      { sessionId: sid('s-stray'), updatedAt: 2, running: false, blank: true },
+    ] as never[] }))
+    await Promise.all([workspaces.refresh(), sessions.refresh()])
+    await Promise.resolve()
+
+    const create = vi.fn()
+    api.onCreate = create
+    const open = vi.spyOn(sessions, 'open')
     workspaces.startSession()
     await Promise.resolve()
-    expect(connect).toHaveBeenLastCalledWith(wid('current-home'))
-
-    sessions.clear()
-    workspaces.startSession()
-    await Promise.resolve()
-    expect(connect).toHaveBeenLastCalledWith(wid('recent-home'))
-
-    const emptyCtx = new Context()
-    const emptyApi = new FakeApiClient()
-    const emptySessions = new SessionRuntime(emptyCtx, emptyApi, fakeRemote())
-    const emptyWorkspaces = new WorkspaceRuntime(emptyCtx, emptyApi, emptySessions)
-    const clear = vi.spyOn(emptySessions, 'clear')
-    emptyWorkspaces.startSession()
-    expect(clear).toHaveBeenCalledOnce()
+    expect(open).toHaveBeenLastCalledWith(sid('s-stray'))
+    expect(create).not.toHaveBeenCalled()
   })
 
   it('archives a session, projects the set from the response, list, and frame, and clears only the current one', async () => {

@@ -165,29 +165,40 @@ export class WorkspaceRuntime implements IWorkspaces {
   }
 
   /**
-   * The shared New Session action behind the shell entry points (sidebar
-   * button, workspace browser): resolve the target Workspace — explicit wins,
-   * then the current Session's Workspace, then the recent-Workspace
-   * projection — connect its blank session and navigate there; with no
-   * Workspace at all, clear the selection into the New Session view state.
-   * Connect failures are non-fatal (console diagnostics; the current view
-   * stays usable).
+   * The shared New Session action behind the shell entry points. A
+   * workspace-scoped call (the workspace browser's row action) connects that
+   * Workspace's blank session. The un-scoped sidebar button opens a
+   * workspace-less temporary session instead, reusing an existing blank
+   * ungrouped session so repeated clicks do not accumulate empty rows.
+   * Failures are non-fatal (console diagnostics; the current view stays
+   * usable).
    * @param workspaceId - explicit target Workspace for scoped actions.
    */
   startSession(workspaceId?: WorkspaceId): void {
-    const workspace = this.list.getSnapshot()
-    const current = this.sessions.list.getSnapshot().current
-    const currentWorkspaceId = current === undefined
-      ? undefined
-      : workspace.items.find(item => item.sessionIds.includes(current))?.workspaceId
-    const target = workspaceId ?? currentWorkspaceId ?? workspace.recentWorkspaceId
-    if (target === undefined) {
-      this.sessions.clear()
+    if (workspaceId !== undefined) {
+      void this.connectWorkspace(workspaceId).then(
+        (sessionId) => { this.sessions.open(sessionId) },
+        (reason: unknown) => { console.warn('new session failed:', reason) },
+      )
       return
     }
-    void this.connectWorkspace(target).then(
+    const workspace = this.list.getSnapshot()
+    const sessions = this.sessions.list.getSnapshot()
+    const grouped = new Set(workspace.items.flatMap(item => item.sessionIds))
+    const existingBlank = sessions.ids.find((id) => {
+      const summary = sessions.byId[id]
+      return summary !== undefined
+        && summary.blank
+        && !grouped.has(id)
+        && !workspace.archivedSessionIds.includes(id)
+    })
+    if (existingBlank !== undefined) {
+      this.sessions.open(existingBlank)
+      return
+    }
+    void this.sessions.create({}).then(
       (sessionId) => { this.sessions.open(sessionId) },
-      (reason: unknown) => { console.warn('new session failed:', reason) },
+      (reason: unknown) => { console.warn('new temporary session failed:', reason) },
     )
   }
 
