@@ -11,7 +11,7 @@ import { installModelSelection } from '@deepseek-ai/dsh-agent'
 import type { Agent, ModelSelection, ModelSelectionRef, AgentOptions, AgentStatus } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-agent-presets/types'
 import { AttachmentError } from '@deepseek-ai/dsh-attachment'
-import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
+import type { DocumentAttachmentRef, ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import { contentHasImage, createUserMessage, freezeMessage, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import { errorChain } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, MessageSource } from '@deepseek-ai/dsh-llm'
@@ -90,7 +90,7 @@ import type { ApprovalOutcome, ApprovalRequestId } from '@deepseek-ai/dsh-user-a
 // `ctx.get('approval')` without a value dependency on the seam (optional composition).
 import type {} from '@deepseek-ai/dsh-user-approval'
 import { approvalResponsePayloadSchema } from './api/approvals.schema.ts'
-import { imageLimitsProjectionSchema, sessionListMetadataProjectionSchema } from './api/sessions.schema.ts'
+import { documentLimitsProjectionSchema, imageLimitsProjectionSchema, sessionListMetadataProjectionSchema } from './api/sessions.schema.ts'
 import { questionResponsePayloadSchema } from './api/questions.schema.ts'
 import type { ClientResponse, RpcError, RpcReceipt, RpcRequest, RpcResponse } from './api/rpc.ts'
 import { RpcId } from './api/rpc.ts'
@@ -147,42 +147,85 @@ function decodeBase64(data: string): Uint8Array {
   return new Uint8Array(decoded)
 }
 
-/** Validate one prompt as a batch before publishing any durable image object. */
+/** Render one extracted document as model-visible text, headed by its display name. */
+function documentText(name: string | undefined, text: string): string {
+  const label = name ?? 'document'
+  const body = text.trim()
+  return body === '' ? `${label} (no extractable text)` : `${label}:\n\n${body}`
+}
+
+/** Validate one prompt as a batch before publishing any durable attachment object. */
 async function durablePromptContent(ctx: Context, content: readonly PromptContentPart[]): Promise<ContentBlock[]> {
   if (content.every(part => part.type === 'text')) {
     return content.map(part => ({ type: 'text', text: part.text }))
   }
-  const limits = ctx.attachments.imageLimits
-  if (content.filter(part => part.type === 'image').length > limits.maxImagesPerMessage) {
+  const imageLimits = ctx.attachments.imageLimits
+  const documentLimits = ctx.attachments.documentLimits
+  const images = content.filter((part): part is Extract<PromptContentPart, { type: 'image' }> => part.type === 'image')
+  const documents = content.filter((part): part is Extract<PromptContentPart, { type: 'document' }> => part.type === 'document')
+  if (images.length > imageLimits.maxImagesPerMessage) {
     throw new AttachmentError('Prompt exceeds the configured image-count limit.', 'TOO_MANY_IMAGES')
   }
-  const prepared = content.map(part => part.type === 'text'
-    ? part
-    : { part, data: decodeBase64(part.data) })
-  const images = prepared.filter((part): part is Extract<typeof part, { data: Uint8Array }> => 'data' in part)
-  const totalBytes = images.reduce((sum, image) => sum + image.data.byteLength, 0)
-  if (totalBytes > limits.maxMessageImageBytes) {
+  if (documents.length > documentLimits.maxDocumentsPerMessage) {
+    throw new AttachmentError('Prompt exceeds the configured document-count limit.', 'TOO_MANY_DOCUMENTS')
+  }
+  const decoded = new Map<PromptContentPart, Uint8Array>()
+  for (const part of images) decoded.set(part, decodeBase64(part.data))
+  for (const part of documents) decoded.set(part, decodeBase64(part.data))
+  const dataFor = (part: PromptContentPart): Uint8Array => decoded.get(part) as Uint8Array
+  const imageBytes = images.reduce((sum, part) => sum + dataFor(part).byteLength, 0)
+  const documentBytes = documents.reduce((sum, part) => sum + dataFor(part).byteLength, 0)
+  if (imageBytes > imageLimits.maxMessageImageBytes) {
     throw new AttachmentError('Prompt exceeds the configured aggregate image-byte limit.', 'IMAGES_TOO_LARGE')
   }
-  for (const image of images) {
+  if (documentBytes > documentLimits.maxMessageDocumentBytes) {
+    throw new AttachmentError('Prompt exceeds the configured aggregate document-byte limit.', 'DOCUMENTS_TOO_LARGE')
+  }
+  for (const part of images) {
     await ctx.attachments.validateImage({
-      data: image.data,
-      mediaType: image.part.mediaType,
-      ...image.part.name === undefined ? {} : { name: image.part.name },
+      data: dataFor(part),
+      mediaType: part.mediaType,
+      ...part.name === undefined ? {} : { name: part.name },
+    })
+  }
+  for (const part of documents) {
+    await ctx.attachments.validateDocument({
+      data: dataFor(part),
+      mediaType: part.mediaType,
+      ...part.name === undefined ? {} : { name: part.name },
     })
   }
   const blocks: ContentBlock[] = []
-  for (const item of prepared) {
-    if (!('data' in item)) {
-      blocks.push({ type: 'text', text: item.text })
-      continue
+  for (const part of content) {
+    switch (part.type) {
+      case 'text': {
+        blocks.push({ type: 'text', text: part.text })
+        break
+      }
+      case 'image': {
+        const attachment = await ctx.attachments.saveImage({
+          data: dataFor(part),
+          mediaType: part.mediaType,
+          ...part.name === undefined ? {} : { name: part.name },
+        })
+        blocks.push({ type: 'image', attachment })
+        break
+      }
+      case 'document': {
+        const saved = await ctx.attachments.saveDocument({
+          data: dataFor(part),
+          mediaType: part.mediaType,
+          ...part.name === undefined ? {} : { name: part.name },
+        })
+        blocks.push({ type: 'text', text: documentText(saved.ref.name, saved.text) })
+        blocks.push({ type: 'document', attachment: saved.ref })
+        break
+      }
+      default: {
+        const exhaustive: never = part
+        throw new AttachmentError(`Unsupported prompt content: ${String(exhaustive)}`, 'INVALID_PROMPT_CONTENT')
+      }
     }
-    const attachment = await ctx.attachments.saveImage({
-      data: item.data,
-      mediaType: item.part.mediaType,
-      ...item.part.name === undefined ? {} : { name: item.part.name },
-    })
-    blocks.push({ type: 'image', attachment })
   }
   return blocks
 }
@@ -240,6 +283,59 @@ function messagesHaveImage(messages: readonly { content: readonly ContentBlock[]
 function referencedImage(events: readonly SessionEvent[], attachmentId: string): ImageAttachmentRef | undefined {
   for (const event of events) {
     const found = imageInEvent(event, ref => String(ref.attachmentId) === attachmentId)
+    if (found !== undefined) return found
+  }
+  return undefined
+}
+
+/** Search durable content for a document reference, including nested tool results. */
+function documentBlockIn(content: unknown, match: (ref: DocumentAttachmentRef) => boolean): DocumentAttachmentRef | undefined {
+  if (!Array.isArray(content)) return undefined
+  for (const value of content) {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) continue
+    const block = value as { type?: unknown; attachment?: unknown; content?: unknown }
+    if (block.type === 'document' && typeof block.attachment === 'object' && block.attachment !== null) {
+      const ref = block.attachment as DocumentAttachmentRef
+      if (match(ref)) return ref
+    }
+    if (block.type === 'tool-result') {
+      const nested = documentBlockIn(block.content, match)
+      if (nested !== undefined) return nested
+    }
+  }
+  return undefined
+}
+
+/** Search every durable event carrier that can own model-visible content. */
+function documentInEvent(event: SessionEvent, match: (ref: DocumentAttachmentRef) => boolean): DocumentAttachmentRef | undefined {
+  const data = event.data as {
+    content?: unknown
+    message?: { content?: unknown }
+    inserted?: Array<{ content?: unknown }>
+    chunk?: { type?: unknown; block?: unknown }
+  }
+  const direct = documentBlockIn(data.content, match)
+  if (direct !== undefined) return direct
+  if (data.message !== undefined) {
+    const wrapped = documentBlockIn(data.message.content, match)
+    if (wrapped !== undefined) return wrapped
+  }
+  if (data.inserted !== undefined) {
+    for (const message of data.inserted) {
+      const inserted = documentBlockIn(message.content, match)
+      if (inserted !== undefined) return inserted
+    }
+  }
+  if (event.type === 'assistant/chunk' && data.chunk?.type === 'block-end') {
+    return documentBlockIn([data.chunk.block], match)
+  }
+  return undefined
+}
+
+/** Resolve the first document reference matching one opaque id. */
+function referencedDocument(events: readonly SessionEvent[], attachmentId: string): DocumentAttachmentRef | undefined {
+  for (const event of events) {
+    const found = documentInEvent(event, ref => String(ref.attachmentId) === attachmentId)
     if (found !== undefined) return found
   }
   return undefined
@@ -1319,6 +1415,14 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
       init: () => null,
       apply: state => state,
       view: () => projectionCtx.attachments.imageLimits,
+      stateVersion: 1,
+    })
+    projectionCtx.sessionProjections.register<'documentLimits', null>({
+      key: 'documentLimits',
+      schema: documentLimitsProjectionSchema,
+      init: () => null,
+      apply: state => state,
+      view: () => projectionCtx.attachments.documentLimits,
       stateVersion: 1,
     })
   })
@@ -2480,6 +2584,7 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
           ...(canonicalTimeZone === undefined ? {} : { clientTimeZone: canonicalTimeZone }),
         }
         const hasImage = content.some(part => part.type === 'image')
+        const hasAttachment = hasImage || content.some(part => part.type === 'document')
         const admit = async (): Promise<RpcResponse<{ accepted: true }>> => {
           try {
             if (hasImage) {
@@ -2513,7 +2618,7 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
           }
           return ok(request, { accepted: true as const })
         }
-        return hasImage ? serializeImageAdmission(agent, admit) : admit()
+        return hasAttachment ? serializeImageAdmission(agent, admit) : admit()
       },
 
       async attachment(request) {
@@ -2535,16 +2640,39 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
             details: {},
           })
         }
-        const ref = referencedImage(state.events, String(attachmentId))
-        if (ref === undefined) {
-          return err(request, {
-            code: 'attachment-error',
-            message: 'Image is not referenced by this session.',
-            details: { reason: 'ATTACHMENT_NOT_REFERENCED' },
-          })
+        const imageRef = referencedImage(state.events, String(attachmentId))
+        if (imageRef === undefined) {
+          const documentRef = referencedDocument(state.events, String(attachmentId))
+          if (documentRef === undefined) {
+            return err(request, {
+              code: 'attachment-error',
+              message: 'Attachment is not referenced by this session.',
+              details: { reason: 'ATTACHMENT_NOT_REFERENCED' },
+            })
+          }
+          try {
+            const stored = await ctx.attachments.readDocument(documentRef)
+            return ok(request, {
+              attachment: stored.ref,
+              data: Buffer.from(stored.data).toString('base64'),
+            })
+          } catch (error: unknown) {
+            if (error instanceof AttachmentError) {
+              return err(request, {
+                code: 'attachment-error',
+                message: error.message,
+                details: { reason: error.code },
+              })
+            }
+            return err(request, {
+              code: 'internal',
+              message: 'Unable to read document attachment.',
+              details: {},
+            })
+          }
         }
         try {
-          const stored = await ctx.attachments.readImage(ref)
+          const stored = await ctx.attachments.readImage(imageRef)
           return ok(request, {
             attachment: stored.ref,
             data: Buffer.from(stored.data).toString('base64'),

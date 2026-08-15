@@ -12,6 +12,7 @@ import { Context } from '@deepseek-ai/cordis'
 import { z } from 'zod'
 import AgentRegistry, { Inbox } from '@deepseek-ai/dsh-agent'
 import { AttachmentStore } from '@deepseek-ai/dsh-attachment'
+import type { DocumentAttachmentLimits } from '@deepseek-ai/dsh-attachment'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
@@ -98,9 +99,18 @@ describe('session.history projections block', () => {
     }
     await ctx.plugin(class extends AttachmentStore {
       readonly imageLimits = limits
+      readonly documentLimits: DocumentAttachmentLimits = Object.freeze({
+        maxDocumentBytes: 1,
+        maxDocumentsPerMessage: 1,
+        maxMessageDocumentBytes: 1,
+        mediaTypes: Object.freeze([] as const),
+      })
       validateImage(): Promise<void> { return Promise.resolve() }
+      validateDocument(): Promise<void> { return Promise.resolve() }
       saveImage(): Promise<never> { return Promise.reject(new Error('unused')) }
+      saveDocument(): Promise<never> { return Promise.reject(new Error('unused')) }
       readImage(): Promise<never> { return Promise.reject(new Error('unused')) }
+      readDocument(): Promise<never> { return Promise.reject(new Error('unused')) }
     })
     const gateway = api(ctx)
     seedMessages(session, 2)

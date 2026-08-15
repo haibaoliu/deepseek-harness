@@ -9,11 +9,17 @@ import {
   AttachmentId,
 } from '@deepseek-ai/dsh-attachment'
 import type {
+  DocumentAttachmentLimits,
+  DocumentAttachmentRef,
   ImageAttachmentLimits,
   ImageAttachmentRef,
+  SaveDocumentAttachment,
+  SavedDocumentAttachment,
   SaveImageAttachment,
+  StoredDocumentAttachment,
   StoredImageAttachment,
 } from '@deepseek-ai/dsh-attachment'
+import { detectDocument, extractDocumentText } from './document.ts'
 import { detectImage, probeImage } from './image.ts'
 
 const ID_PATTERN = /^sha256:([a-f0-9]{64})$/
@@ -37,13 +43,13 @@ function objectPath(root: string, sha256: string): string {
   return join(root, 'objects', sha256.slice(0, 2), sha256)
 }
 
-function ensureReference(ref: ImageAttachmentRef): string {
-  const match = ID_PATTERN.exec(String(ref.attachmentId))
+function ensureReference(attachmentId: AttachmentId): string {
+  const match = ID_PATTERN.exec(String(attachmentId))
   if (match?.[1] === undefined) throw new AttachmentError('Attachment reference is invalid.', 'INVALID_ATTACHMENT_REF')
   return match[1]
 }
 
-async function inspectMetadata(
+async function inspectImageMetadata(
   data: Uint8Array,
   declaredMediaType: ImageAttachmentRef['mediaType'],
   maxPixels?: number,
@@ -64,7 +70,21 @@ export async function validateImageFile(input: SaveImageAttachment, limits: Imag
   if (input.data.byteLength > limits.maxImageBytes) {
     throw new AttachmentError('Image exceeds the configured byte limit.', 'IMAGE_TOO_LARGE')
   }
-  await inspectMetadata(input.data, input.mediaType, limits.maxImagePixels)
+  await inspectImageMetadata(input.data, input.mediaType, limits.maxImagePixels)
+}
+
+/**
+ * Run the full admission policy for one document without touching storage.
+ * @param input - encoded bytes and declared metadata.
+ * @param limits - resolved storage policy.
+ * @returns completion after the document container has been inspected and text extracted.
+ */
+export async function validateDocumentFile(input: SaveDocumentAttachment, limits: DocumentAttachmentLimits): Promise<void> {
+  if (input.data.byteLength > limits.maxDocumentBytes) {
+    throw new AttachmentError('Document exceeds the configured byte limit.', 'DOCUMENT_TOO_LARGE')
+  }
+  await detectDocument(input.data, input.mediaType)
+  await extractDocumentText(input.data, input.mediaType)
 }
 
 /**
@@ -127,16 +147,15 @@ async function ensureDurableHome(path: string): Promise<string> {
 }
 
 /**
- * Save and verify immutable image bytes below a versioned attachment root.
+ * Write one byte object into the content-addressed store and return its
+ * sha256 after the object and its bucket entries are durable. Equal bytes
+ * deduplicate to the same object and are re-verified against the digest.
  * @param root - absolute `DSH_HOME/attachments/v1` root.
- * @param input - encoded bytes and declared metadata.
- * @param limits - resolved storage policy.
- * @returns durable content-addressed reference.
+ * @param data - complete immutable object bytes.
+ * @returns the object's sha256 hex digest.
  */
-export async function saveImageFile(root: string, input: SaveImageAttachment, limits: ImageAttachmentLimits): Promise<ImageAttachmentRef> {
-  if (input.data.byteLength > limits.maxImageBytes) throw new AttachmentError('Image exceeds the configured byte limit.', 'IMAGE_TOO_LARGE')
-  const metadata = await inspectMetadata(input.data, input.mediaType, limits.maxImagePixels)
-  const sha256 = digest(input.data)
+async function commitObject(root: string, data: Uint8Array): Promise<string> {
+  const sha256 = digest(data)
   const bucket = join(root, 'objects', sha256.slice(0, 2))
   const staging = join(root, 'tmp')
   // Establish DSH_HOME itself against the filesystem root once per process.
@@ -150,7 +169,7 @@ export async function saveImageFile(root: string, input: SaveImageAttachment, li
   let handle
   try {
     handle = await open(temporary, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600)
-    await handle.writeFile(input.data)
+    await handle.writeFile(data)
     await handle.sync()
     await handle.close()
     handle = undefined
@@ -183,8 +202,38 @@ export async function saveImageFile(root: string, input: SaveImageAttachment, li
       },
     )
     if (error instanceof AttachmentError) throw error
-    throw new AttachmentError('Unable to persist image attachment.', 'ATTACHMENT_WRITE_FAILED', { cause: error })
+    throw new AttachmentError('Unable to persist attachment object.', 'ATTACHMENT_WRITE_FAILED', { cause: error })
   }
+  return sha256
+}
+
+/** Read one content-addressed object, verifying its digest against its id. */
+async function readObjectFile(root: string, sha256: string, signal?: AbortSignal): Promise<Uint8Array> {
+  signal?.throwIfAborted()
+  let data: Uint8Array
+  try {
+    data = new Uint8Array(await readFile(objectPath(root, sha256), { signal }))
+  } catch (error) {
+    signal?.throwIfAborted()
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') throw new AttachmentError('Attachment object is missing.', 'ATTACHMENT_NOT_FOUND')
+    throw new AttachmentError('Unable to read attachment object.', 'ATTACHMENT_READ_FAILED', { cause: error })
+  }
+  signal?.throwIfAborted()
+  if (digest(data) !== sha256) throw new AttachmentError('Stored attachment failed integrity verification.', 'ATTACHMENT_CORRUPT')
+  return data
+}
+
+/**
+ * Save and verify immutable image bytes below a versioned attachment root.
+ * @param root - absolute `DSH_HOME/attachments/v1` root.
+ * @param input - encoded bytes and declared metadata.
+ * @param limits - resolved storage policy.
+ * @returns durable content-addressed reference.
+ */
+export async function saveImageFile(root: string, input: SaveImageAttachment, limits: ImageAttachmentLimits): Promise<ImageAttachmentRef> {
+  if (input.data.byteLength > limits.maxImageBytes) throw new AttachmentError('Image exceeds the configured byte limit.', 'IMAGE_TOO_LARGE')
+  const metadata = await inspectImageMetadata(input.data, input.mediaType, limits.maxImagePixels)
+  const sha256 = await commitObject(root, input.data)
   const name = displayName(input.name)
   return {
     attachmentId: AttachmentId(`sha256:${sha256}`),
@@ -206,18 +255,8 @@ export async function readImageFile(
   ref: ImageAttachmentRef,
   signal?: AbortSignal,
 ): Promise<StoredImageAttachment> {
-  signal?.throwIfAborted()
-  const sha256 = ensureReference(ref)
-  let data: Uint8Array
-  try {
-    data = new Uint8Array(await readFile(objectPath(root, sha256), { signal }))
-  } catch (error) {
-    signal?.throwIfAborted()
-    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') throw new AttachmentError('Attachment object is missing.', 'ATTACHMENT_NOT_FOUND')
-    throw new AttachmentError('Unable to read image attachment.', 'ATTACHMENT_READ_FAILED', { cause: error })
-  }
-  signal?.throwIfAborted()
-  if (digest(data) !== sha256) throw new AttachmentError('Stored attachment failed integrity verification.', 'ATTACHMENT_CORRUPT')
+  const sha256 = ensureReference(ref.attachmentId)
+  const data = await readObjectFile(root, sha256, signal)
   // The digest proves these are the exact bytes admission fully decoded, so
   // the read path only re-derives the header fields (no raster decode, no
   // per-request pixel amplification on history replay).
@@ -225,6 +264,55 @@ export async function readImageFile(
   signal?.throwIfAborted()
   if (metadata.mediaType !== ref.mediaType || data.byteLength !== ref.bytes
     || metadata.width !== ref.width || metadata.height !== ref.height) {
+    throw new AttachmentError('Stored attachment metadata does not match its reference.', 'ATTACHMENT_CORRUPT')
+  }
+  return { ref, data }
+}
+
+/**
+ * Save and verify immutable document bytes below a versioned attachment root,
+ * returning both the durable reference and the extracted model-visible text.
+ * @param root - absolute `DSH_HOME/attachments/v1` root.
+ * @param input - encoded bytes and declared metadata.
+ * @param limits - resolved storage policy.
+ * @returns durable content-addressed reference plus extracted text.
+ */
+export async function saveDocumentFile(
+  root: string,
+  input: SaveDocumentAttachment,
+  limits: DocumentAttachmentLimits,
+): Promise<SavedDocumentAttachment> {
+  if (input.data.byteLength > limits.maxDocumentBytes) throw new AttachmentError('Document exceeds the configured byte limit.', 'DOCUMENT_TOO_LARGE')
+  await detectDocument(input.data, input.mediaType)
+  const text = await extractDocumentText(input.data, input.mediaType)
+  const sha256 = await commitObject(root, input.data)
+  const name = displayName(input.name)
+  const ref: DocumentAttachmentRef = {
+    attachmentId: AttachmentId(`sha256:${sha256}`),
+    mediaType: input.mediaType,
+    bytes: input.data.byteLength,
+    ...(name !== undefined ? { name } : {}),
+  }
+  return { ref, text }
+}
+
+/**
+ * Read and verify one content-addressed document.
+ * @param root - absolute `DSH_HOME/attachments/v1` root.
+ * @param ref - reference recorded in the session log.
+ * @param signal - optional cancellation for filesystem and verification work.
+ * @returns verified bytes and reference.
+ * @throws the signal reason when aborted, or an AttachmentError when verification fails.
+ */
+export async function readDocumentFile(
+  root: string,
+  ref: DocumentAttachmentRef,
+  signal?: AbortSignal,
+): Promise<StoredDocumentAttachment> {
+  const sha256 = ensureReference(ref.attachmentId)
+  const data = await readObjectFile(root, sha256, signal)
+  signal?.throwIfAborted()
+  if (data.byteLength !== ref.bytes) {
     throw new AttachmentError('Stored attachment metadata does not match its reference.', 'ATTACHMENT_CORRUPT')
   }
   return { ref, data }

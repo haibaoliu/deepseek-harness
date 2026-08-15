@@ -150,6 +150,15 @@ describe('Web session model selection', () => {
       },
       validateImage,
       saveImage,
+      documentLimits: {
+        maxDocumentBytes: 4,
+        maxDocumentsPerMessage: 2,
+        maxMessageDocumentBytes: 4,
+        mediaTypes: [],
+      },
+      validateDocument: vi.fn((_input: { data: Uint8Array }) => Promise.resolve()),
+      saveDocument: vi.fn(),
+      readDocument: vi.fn(),
     } as never)
     const followup = vi.fn()
     Object.assign(agent, { followup })

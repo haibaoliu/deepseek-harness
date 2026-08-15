@@ -15,7 +15,7 @@ import type {
   ModelReasoningEffort, ModelSelection, SessionListMetadata, SessionProjectionsBlock, SessionSearchItem, SessionSummary,
 } from './sessions.ts'
 import type { ToolEventView } from './events.ts'
-import type { AttachmentIdType, ImageAttachmentLimits, ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
+import type { AttachmentIdType, DocumentAttachmentLimits, DocumentAttachmentRef, DocumentMediaType, ImageAttachmentLimits, ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import type { WorkspaceId } from './workspace.ts'
 import {
   SESSION_SEARCH_RESULT_LIMIT,
@@ -234,6 +234,18 @@ export const imageLimitsProjectionSchema = z.object({
   mediaTypes: z.array(z.string()),
 }) as unknown as z.ZodType<ImageAttachmentLimits>
 
+/**
+ * documentLimits projection unit schema (host-side view validation). zod widens
+ * `readonly DocumentMediaType[]` to `string[]`; on the JSON wire the two
+ * serialize identically, so the cast records exactly that widening.
+ */
+export const documentLimitsProjectionSchema = z.object({
+  maxDocumentBytes: z.number().int().positive(),
+  maxDocumentsPerMessage: z.number().int().positive(),
+  maxMessageDocumentBytes: z.number().int().positive(),
+  mediaTypes: z.array(z.string()),
+}) as unknown as z.ZodType<DocumentAttachmentLimits>
+
 /** session.history response value (projections rides the tail page only). */
 export const sessionHistoryValueSchema: z.ZodType<Wire<ResponseValue<'session.history'>>> = z.object({
   events: z.array(historyEntrySchema),
@@ -278,10 +290,19 @@ export const imageMediaTypeSchema = z.union([
   z.literal('image/gif'),
 ])
 
+/** Text-bearing document media types accepted by the browser wire. */
+export const documentMediaTypeSchema = z.union([
+  z.literal('text/markdown'),
+  z.literal('application/pdf'),
+  z.literal('application/vnd.openxmlformats-officedocument.wordprocessingml.document'),
+  z.literal('application/vnd.openxmlformats-officedocument.presentationml.presentation'),
+]) as unknown as z.ZodType<DocumentMediaType>
+
 /** Prompt wire content is intentionally narrower than merge-extensible durable core content. */
 export const promptContentPartSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('text'), text: z.string() }),
   z.object({ type: z.literal('image'), mediaType: imageMediaTypeSchema, data: z.string(), name: z.string().optional() }),
+  z.object({ type: z.literal('document'), mediaType: documentMediaTypeSchema, data: z.string(), name: z.string().optional() }),
 ])
 
 /** session.prompt request payload, including optional browser-local request provenance. */
@@ -314,6 +335,14 @@ export const imageAttachmentRefSchema = z.object({
   name: z.string().optional(),
 }) as unknown as z.ZodType<ImageAttachmentRef>
 
+/** Durable document reference returned from the authenticated session lookup. */
+export const documentAttachmentRefSchema = z.object({
+  attachmentId: attachmentIdSchema,
+  mediaType: documentMediaTypeSchema,
+  bytes: z.number().int().positive(),
+  name: z.string().optional(),
+}) as unknown as z.ZodType<DocumentAttachmentRef>
+
 /** session.attachment request payload. */
 export const sessionAttachmentRequestSchema = z.object({
   sessionId: sessionIdSchema,
@@ -322,7 +351,7 @@ export const sessionAttachmentRequestSchema = z.object({
 
 /** session.attachment response value. */
 export const sessionAttachmentValueSchema = z.object({
-  attachment: imageAttachmentRefSchema,
+  attachment: z.union([imageAttachmentRefSchema, documentAttachmentRefSchema]),
   data: z.string(),
 }) satisfies z.ZodType<Wire<ResponseValue<'session.attachment'>>>
 

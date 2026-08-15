@@ -4,12 +4,23 @@ import { join, resolve } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { AttachmentStore } from '@deepseek-ai/dsh-attachment'
-import type { ImageAttachmentLimits, ImageAttachmentRef, SaveImageAttachment, StoredImageAttachment } from '@deepseek-ai/dsh-attachment'
+import type {
+  DocumentAttachmentLimits,
+  DocumentAttachmentRef,
+  ImageAttachmentLimits,
+  ImageAttachmentRef,
+  SaveDocumentAttachment,
+  SavedDocumentAttachment,
+  SaveImageAttachment,
+  StoredDocumentAttachment,
+  StoredImageAttachment,
+} from '@deepseek-ai/dsh-attachment'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
-import { readImageFile, saveImageFile, validateImageFile } from './store.ts'
+import { readDocumentFile, readImageFile, saveDocumentFile, saveImageFile, validateDocumentFile, validateImageFile } from './store.ts'
 
 export { detectImage } from './image.ts'
-export { readImageFile, saveImageFile, validateImageFile } from './store.ts'
+export { detectDocument, extractDocumentText } from './document.ts'
+export { readDocumentFile, readImageFile, saveDocumentFile, saveImageFile, validateDocumentFile, validateImageFile } from './store.ts'
 
 /** Default maximum encoded bytes for one image. */
 export const DEFAULT_MAX_IMAGE_BYTES = 5 * 1024 * 1024
@@ -19,6 +30,12 @@ export const DEFAULT_MAX_IMAGES_PER_MESSAGE = 20
 export const DEFAULT_MAX_MESSAGE_IMAGE_BYTES = 100 * 1024 * 1024
 /** Default maximum intrinsic pixels for one image. */
 export const DEFAULT_MAX_IMAGE_PIXELS = 40_000_000
+/** Default maximum encoded bytes for one document. */
+export const DEFAULT_MAX_DOCUMENT_BYTES = 25 * 1024 * 1024
+/** Default maximum documents in one prompt. */
+export const DEFAULT_MAX_DOCUMENTS_PER_MESSAGE = 10
+/** Default maximum aggregate document bytes in one prompt. */
+export const DEFAULT_MAX_MESSAGE_DOCUMENT_BYTES = 100 * 1024 * 1024
 
 /** Local attachment backend configuration. */
 export interface Config {
@@ -32,6 +49,12 @@ export interface Config {
   maxMessageImageBytes?: number
   /** Maximum intrinsic width multiplied by height accepted for one image. */
   maxImagePixels?: number
+  /** Maximum encoded bytes accepted for one document. */
+  maxDocumentBytes?: number
+  /** Maximum document count accepted in one submitted message. */
+  maxDocumentsPerMessage?: number
+  /** Maximum aggregate encoded document bytes accepted in one submitted message. */
+  maxMessageDocumentBytes?: number
 }
 
 /** Persistent content-addressed local attachment store. */
@@ -42,11 +65,15 @@ export class LocalAttachmentStore extends AttachmentStore {
     maxImagesPerMessage: z.number().step(1).min(1).default(DEFAULT_MAX_IMAGES_PER_MESSAGE),
     maxMessageImageBytes: z.number().step(1).min(1).default(DEFAULT_MAX_MESSAGE_IMAGE_BYTES),
     maxImagePixels: z.number().step(1).min(1).default(DEFAULT_MAX_IMAGE_PIXELS),
+    maxDocumentBytes: z.number().step(1).min(1).default(DEFAULT_MAX_DOCUMENT_BYTES),
+    maxDocumentsPerMessage: z.number().step(1).min(1).default(DEFAULT_MAX_DOCUMENTS_PER_MESSAGE),
+    maxMessageDocumentBytes: z.number().step(1).min(1).default(DEFAULT_MAX_MESSAGE_DOCUMENT_BYTES),
   })
 
   /** Absolute versioned storage root. */
   readonly root: string
   readonly imageLimits: ImageAttachmentLimits
+  readonly documentLimits: DocumentAttachmentLimits
 
   constructor(ctx: Context, config: Config) {
     super(ctx)
@@ -57,6 +84,17 @@ export class LocalAttachmentStore extends AttachmentStore {
       maxMessageImageBytes: config.maxMessageImageBytes ?? DEFAULT_MAX_MESSAGE_IMAGE_BYTES,
       maxImagePixels: config.maxImagePixels ?? DEFAULT_MAX_IMAGE_PIXELS,
       mediaTypes: Object.freeze(['image/png', 'image/jpeg', 'image/webp', 'image/gif'] as const),
+    })
+    this.documentLimits = Object.freeze({
+      maxDocumentBytes: config.maxDocumentBytes ?? DEFAULT_MAX_DOCUMENT_BYTES,
+      maxDocumentsPerMessage: config.maxDocumentsPerMessage ?? DEFAULT_MAX_DOCUMENTS_PER_MESSAGE,
+      maxMessageDocumentBytes: config.maxMessageDocumentBytes ?? DEFAULT_MAX_MESSAGE_DOCUMENT_BYTES,
+      mediaTypes: Object.freeze([
+        'text/markdown',
+        'application/pdf',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      ] as const),
     })
   }
 
@@ -70,6 +108,18 @@ export class LocalAttachmentStore extends AttachmentStore {
 
   async readImage(ref: ImageAttachmentRef, signal?: AbortSignal): Promise<StoredImageAttachment> {
     return readImageFile(this.root, ref, signal)
+  }
+
+  async validateDocument(input: SaveDocumentAttachment): Promise<void> {
+    await validateDocumentFile(input, this.documentLimits)
+  }
+
+  async saveDocument(input: SaveDocumentAttachment): Promise<SavedDocumentAttachment> {
+    return saveDocumentFile(this.root, input, this.documentLimits)
+  }
+
+  async readDocument(ref: DocumentAttachmentRef, signal?: AbortSignal): Promise<StoredDocumentAttachment> {
+    return readDocumentFile(this.root, ref, signal)
   }
 }
 
