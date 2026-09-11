@@ -66,6 +66,23 @@ export function fileCardLabels(t: TranslateNS<'conversation'>, name: string): Fi
 }
 
 /**
+ * Resolve pending-document card strings from the conversation namespace.
+ * @param t - conversation namespace translator.
+ * @param name - browser file name interpolated into the remove label.
+ * @returns translated file-card labels; upload states stay file-owned copy
+ * because a document draft never uploads.
+ */
+export function documentCardLabels(t: TranslateNS<'conversation'>, name: string): FileCardLabels {
+  return {
+    label: t('document.pending'),
+    remove: t('document.remove', { name }),
+    uploading: t('file.uploading'),
+    failed: t('file.uploadFailed'),
+    retry: t('file.retry', { name }),
+  }
+}
+
+/**
  * Resolve the mixed draft-attachment rail strings from the conversation namespace.
  * @param t - conversation namespace translator.
  * @returns translated attachment-rail labels.

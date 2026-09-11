@@ -2,7 +2,9 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import { randomUUID } from '@deepseek-ai/dsh-util-crypto'
-import type { AttachmentIdType, FileAttachmentRef, ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
+import type {
+  AttachmentIdType, DocumentAttachmentRef, FileAttachmentRef, ImageAttachmentRef,
+} from '@deepseek-ai/dsh-attachment'
 import type { SubagentAddress } from '@deepseek-ai/dsh-subagent/client'
 import type { MessageId } from '@deepseek-ai/dsh-llm/brand'
 import { SessionLogOffset, SessionSeq, type SessionId } from '@deepseek-ai/dsh-session/types'
@@ -300,13 +302,13 @@ export class Session implements SessionFace {
   }
 
   /**
-   * Resolve one image referenced by this session into browser-consumable bytes.
+   * Resolve one image or document referenced by this session into browser-consumable bytes.
    * @param attachmentId - opaque id found in the folded session log.
    * @returns the authenticated reference and decoded bytes.
    */
   async readAttachment(
     attachmentId: AttachmentIdType,
-  ): Promise<RemoteResult<{ attachment: ImageAttachmentRef; data: Uint8Array }>> {
+  ): Promise<RemoteResult<{ attachment: ImageAttachmentRef | DocumentAttachmentRef; data: Uint8Array }>> {
     const result = await this.remote.session.attachment({
       sessionId: this.sessionId,
       attachmentId,

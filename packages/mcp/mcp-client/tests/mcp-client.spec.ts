@@ -3,7 +3,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { Context } from '@deepseek-ai/cordis'
 import AttachmentStore, { AttachmentError, AttachmentId } from '@deepseek-ai/dsh-attachment'
-import type { ImageAttachmentLimits, ImageAttachmentRef, SaveImageAttachment, StoredImageAttachment } from '@deepseek-ai/dsh-attachment'
+import type { DocumentAttachmentLimits, DocumentAttachmentRef, ImageAttachmentLimits, ImageAttachmentRef, SaveDocumentAttachment, SaveImageAttachment, SavedDocumentAttachment, StoredDocumentAttachment, StoredImageAttachment } from '@deepseek-ai/dsh-attachment'
 import { ToolCallId, LlmAdapter, LlmRuntime } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, LlmResolvedModelInfo, StreamChunk } from '@deepseek-ai/dsh-llm'
@@ -81,9 +81,19 @@ const IMAGE_LIMITS: ImageAttachmentLimits = {
 /** Attachment fake that records exact decoded batches while using the real batch contract. */
 class RecordingAttachmentStore extends AttachmentStore {
   readonly imageLimits = IMAGE_LIMITS
+  readonly documentLimits: DocumentAttachmentLimits = {
+    maxDocumentBytes: 1,
+    maxDocumentsPerMessage: 1,
+    maxMessageDocumentBytes: 1,
+    mediaTypes: [],
+  }
   readonly saved: SaveImageAttachment[] = []
 
   validateImage(_input: SaveImageAttachment): Promise<void> {
+    return Promise.resolve()
+  }
+
+  validateDocument(_input: SaveDocumentAttachment): Promise<void> {
     return Promise.resolve()
   }
 
@@ -100,8 +110,16 @@ class RecordingAttachmentStore extends AttachmentStore {
     return Promise.resolve(ref)
   }
 
+  saveDocument(_input: SaveDocumentAttachment): Promise<SavedDocumentAttachment> {
+    throw new Error('unreachable in this test')
+  }
+
   readImage(_ref: ImageAttachmentRef): Promise<StoredImageAttachment> {
     throw new Error('not used')
+  }
+
+  readDocument(_ref: DocumentAttachmentRef): Promise<StoredDocumentAttachment> {
+    throw new Error('unreachable in this test')
   }
 }
 

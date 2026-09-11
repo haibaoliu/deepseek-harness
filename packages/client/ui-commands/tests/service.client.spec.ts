@@ -419,6 +419,26 @@ describe('candidates', () => {
       expect(executeCalls).toEqual([{ sessionId: sid('s1'), line: '/plan do x', images: [] }])
     })
 
+    it('refuses a document attachment with product copy instead of dispatching it', async () => {
+      const { source, warm, executeCalls } = await bench({ commands: () => Promise.resolve({ commands: SHIPPED }) })
+      await warm(proj('s1'))
+      const outcome = menuPick(source, 'plan', proj('s1'))
+      if (outcome === undefined || outcome === 'handled' || !('claim' in outcome)) throw new Error('expected the claim')
+      const document: SubmitAttachment = {
+        type: 'document',
+        mediaType: 'application/pdf',
+        data: 'QUJD',
+        name: 'paper.pdf',
+      }
+      // The command wire carries images and file receipts only: the refusal is
+      // explicit product copy, and the Host executor is never called.
+      await expect(outcome.claim.submit('do x', new Context(), [document])).resolves.toEqual({
+        kind: 'error',
+        text: 'command:notice.documentsUnsupported{"command":"plan"}',
+      })
+      expect(executeCalls).toEqual([])
+    })
+
     it('a typed localized token resolves to the built-in command on space and enter; the Host line carries the catalog name', async () => {
       const { source, mint, warm, executeCalls } = await bench({ commands: () => Promise.resolve({ commands: SHIPPED }) })
       mint('s1')

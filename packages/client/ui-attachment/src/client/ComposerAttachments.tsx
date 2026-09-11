@@ -8,7 +8,7 @@ import type { AttachmentRailItem } from '../AttachmentRail.tsx'
 import { DropOverlay } from '../DropOverlay.tsx'
 import { FileCard } from '../FileCard.tsx'
 import { ImageLightbox } from '../ImageLightbox.tsx'
-import { attachmentRailLabels, dropOverlayLabels, fileCardLabels, lightboxLabels } from './labels.ts'
+import { attachmentRailLabels, documentCardLabels, dropOverlayLabels, fileCardLabels, lightboxLabels } from './labels.ts'
 import css from './ComposerAttachments.module.css'
 
 /** Rail item retaining its browser-owned attachment for callbacks. */
@@ -114,6 +114,19 @@ export function ComposerAttachments({
                     labels={fileCardLabels(t, attachment.file.name)}
                     onRemove={() => { onRemoveAttachment(attachment.id) }}
                     onRetry={() => { onRetryFile(attachment.id) }}
+                  />
+                )
+              }
+              if (attachment.kind === 'document') {
+                // A document inlines at send, so it never uploads and never
+                // retries: the card shows its name, size, and remove control.
+                return (
+                  <FileCard
+                    name={attachment.file.name || t('document.label')}
+                    bytes={attachment.file.size}
+                    state="ready"
+                    labels={documentCardLabels(t, attachment.file.name)}
+                    onRemove={() => { onRemoveAttachment(attachment.id) }}
                   />
                 )
               }

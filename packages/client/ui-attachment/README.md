@@ -29,7 +29,7 @@ Mount this plugin alongside [`ui-conversation`](../ui-conversation/README.md) an
 
 ### Draft attachments
 
-Images and generic files retain pick order in one non-wrapping horizontal rail. Every item is 64px high: an image is a 64px square thumbnail, while a generic file is a 240px-wide DeepSeek Web card with a 16px radius, blue gradient document glyph, filename, and uppercase extension plus byte size. Edge arrows page hidden overflow, the scrollbar stays hidden, and a newly added item is revealed at the rail's end. Uploading replaces a file glyph with a spinner and shows byte progress when the carrier reports it, with an indeterminate bar before the first report; failure shows retry, and removal controls appear on hover or keyboard focus while remaining visible on touch devices. Clicking an image opens the original.
+Images, documents, and generic files retain pick order in one non-wrapping horizontal rail. Every item is 64px high: an image is a 64px square thumbnail, while a generic file is a 240px-wide DeepSeek Web card with a 16px radius, blue gradient document glyph, filename, and uppercase extension plus byte size. A document uses the same card without upload state or retry, because its bytes inline into the prompt at send for Host text extraction. Edge arrows page hidden overflow, the scrollbar stays hidden, and a newly added item is revealed at the rail's end. Uploading replaces a file glyph with a spinner and shows byte progress when the carrier reports it, with an indeterminate bar before the first report; failure shows retry, and removal controls appear on hover or keyboard focus while remaining visible on touch devices. Clicking an image opens the original.
 
 ### Message images and the lightbox
 

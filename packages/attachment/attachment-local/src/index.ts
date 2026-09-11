@@ -5,20 +5,28 @@ import { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { AttachmentStore } from '@deepseek-ai/dsh-attachment'
 import type {
+  DocumentAttachmentLimits,
+  DocumentAttachmentRef,
   FileAttachmentRef,
   ImageAttachmentLimits,
   ImageAttachmentRef,
   ImageRequestPolicy,
   RequestImageAttachment,
+  SaveDocumentAttachment,
   SaveFileAttachment,
   SaveFileStreamAttachment,
   SaveImageAttachment,
+  SavedDocumentAttachment,
+  StoredDocumentAttachment,
   StoredImageAttachment,
 } from '@deepseek-ai/dsh-attachment'
 import { dshCachePath, resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import type { NormalizationPolicy } from './normalization.ts'
 import { CompressionLimiter, compressionFailure } from './compression-limiter.ts'
-import { commitPreparedImageFile, normalizedImagePath, prepareImageFile, readImageFile, validateImageFile } from './store.ts'
+import {
+  commitPreparedImageFile, normalizedImagePath, prepareImageFile, readDocumentFile, readImageFile,
+  saveDocumentFile, validateDocumentFile, validateImageFile,
+} from './store.ts'
 import {
   readFileStreamVerbatim, saveFileStreamVerbatim, saveFileVerbatim, storedFilePath,
 } from './file-store.ts'
@@ -26,9 +34,13 @@ import { readRequestImageFile, requestImageVariantId } from './request-image.ts'
 
 export { canPassThroughNormalization, normalizeImage } from './normalization.ts'
 export type { NormalizedImage, NormalizationPolicy } from './normalization.ts'
-export { commitPreparedImageFile, prepareImageFile, readImageFile, saveImageFile, validateImageFile } from './store.ts'
+export {
+  commitPreparedImageFile, prepareImageFile, readDocumentFile, readImageFile, saveDocumentFile,
+  saveImageFile, validateDocumentFile, validateImageFile,
+} from './store.ts'
 export type { PreparedImageFile } from './store.ts'
 export { readRequestImageFile, requestImageVariantId } from './request-image.ts'
+export { detectDocument, extractDocumentText } from './document.ts'
 
 /** Default maximum encoded bytes for one submitted image; oversized sources are refused, not shrunk. */
 export const DEFAULT_MAX_IMAGE_BYTES = 20 * 1024 * 1024
@@ -40,6 +52,12 @@ export const DEFAULT_MAX_MESSAGE_IMAGE_BYTES = 200 * 1024 * 1024
 export const DEFAULT_MAX_IMAGE_PIXELS = 64_000_000
 /** Default per-side pixel cap for one submitted image. */
 export const DEFAULT_MAX_IMAGE_DIMENSION = 8192
+/** Default maximum encoded bytes for one submitted document. */
+export const DEFAULT_MAX_DOCUMENT_BYTES = 25 * 1024 * 1024
+/** Default maximum documents in one prompt. */
+export const DEFAULT_MAX_DOCUMENTS_PER_MESSAGE = 10
+/** Default maximum aggregate document bytes in one prompt. */
+export const DEFAULT_MAX_MESSAGE_DOCUMENT_BYTES = 100 * 1024 * 1024
 /**
  * Default total-pixel budget of the stored normalized image. A larger source
  * is admitted and downscaled proportionally, so admission bounds what rides
@@ -71,6 +89,12 @@ export interface Config {
   maxImagePixels?: number
   /** Maximum intrinsic width and maximum intrinsic height accepted for one submitted image. Default: 8192px. */
   maxImageDimension?: number
+  /** Maximum encoded bytes accepted for one submitted document. Default: 25 MiB. */
+  maxDocumentBytes?: number
+  /** Maximum document count accepted in one submitted message. Default: 10. */
+  maxDocumentsPerMessage?: number
+  /** Maximum aggregate encoded document bytes accepted in one submitted message. Default: 100 MiB. */
+  maxMessageDocumentBytes?: number
   /** Total-pixel budget of the stored provider-independent normalized image. */
   normalizedImageMaxPixels?: number
   /** Long-edge pixel cap of the stored provider-independent normalized image, applied after the total-pixel budget. */
@@ -152,6 +176,9 @@ export class LocalAttachmentStore extends AttachmentStore {
     maxMessageImageBytes: z.number().step(1).min(1).default(DEFAULT_MAX_MESSAGE_IMAGE_BYTES),
     maxImagePixels: z.number().step(1).min(1).default(DEFAULT_MAX_IMAGE_PIXELS),
     maxImageDimension: z.number().step(1).min(1).default(DEFAULT_MAX_IMAGE_DIMENSION),
+    maxDocumentBytes: z.number().step(1).min(1).default(DEFAULT_MAX_DOCUMENT_BYTES),
+    maxDocumentsPerMessage: z.number().step(1).min(1).default(DEFAULT_MAX_DOCUMENTS_PER_MESSAGE),
+    maxMessageDocumentBytes: z.number().step(1).min(1).default(DEFAULT_MAX_MESSAGE_DOCUMENT_BYTES),
     normalizedImageMaxPixels: z.number().step(1).min(1).default(DEFAULT_NORMALIZED_IMAGE_MAX_PIXELS),
     normalizedImageMaxDimension: z.number().step(1).min(1).default(DEFAULT_NORMALIZED_IMAGE_MAX_DIMENSION),
     normalizedImageMaxBytes: z.number().step(1).min(1).default(DEFAULT_NORMALIZED_IMAGE_MAX_BYTES),
@@ -162,6 +189,7 @@ export class LocalAttachmentStore extends AttachmentStore {
   /** Absolute versioned storage root. */
   readonly root: string
   readonly imageLimits: ImageAttachmentLimits
+  readonly documentLimits: DocumentAttachmentLimits
   /** Resolved provider-independent normalization policy. */
   readonly normalizationPolicy: Readonly<NormalizationPolicy>
   /** Resolved instance-level compression limit. */
@@ -182,6 +210,17 @@ export class LocalAttachmentStore extends AttachmentStore {
       maxImagePixels: config.maxImagePixels ?? DEFAULT_MAX_IMAGE_PIXELS,
       maxImageDimension: config.maxImageDimension ?? DEFAULT_MAX_IMAGE_DIMENSION,
       mediaTypes: Object.freeze(['image/png', 'image/jpeg', 'image/webp', 'image/gif'] as const),
+    })
+    this.documentLimits = Object.freeze({
+      maxDocumentBytes: config.maxDocumentBytes ?? DEFAULT_MAX_DOCUMENT_BYTES,
+      maxDocumentsPerMessage: config.maxDocumentsPerMessage ?? DEFAULT_MAX_DOCUMENTS_PER_MESSAGE,
+      maxMessageDocumentBytes: config.maxMessageDocumentBytes ?? DEFAULT_MAX_MESSAGE_DOCUMENT_BYTES,
+      mediaTypes: Object.freeze([
+        'text/markdown',
+        'application/pdf',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      ] as const),
     })
     this.normalizationPolicy = Object.freeze({
       maxPixels: config.normalizedImageMaxPixels ?? DEFAULT_NORMALIZED_IMAGE_MAX_PIXELS,
@@ -223,6 +262,18 @@ export class LocalAttachmentStore extends AttachmentStore {
 
   async readImage(ref: ImageAttachmentRef, signal?: AbortSignal): Promise<StoredImageAttachment> {
     return readImageFile(this.root, ref, signal)
+  }
+
+  async validateDocument(input: SaveDocumentAttachment): Promise<void> {
+    await validateDocumentFile(input, this.documentLimits)
+  }
+
+  async saveDocument(input: SaveDocumentAttachment): Promise<SavedDocumentAttachment> {
+    return saveDocumentFile(this.root, input, this.documentLimits)
+  }
+
+  async readDocument(ref: DocumentAttachmentRef, signal?: AbortSignal): Promise<StoredDocumentAttachment> {
+    return readDocumentFile(this.root, ref, signal)
   }
 
   override imageHostPath(ref: ImageAttachmentRef): string {
@@ -285,7 +336,6 @@ export class LocalAttachmentStore extends AttachmentStore {
     }
     return operation.wait(signal)
   }
-
 }
 
 export default LocalAttachmentStore

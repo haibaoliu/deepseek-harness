@@ -138,7 +138,7 @@ describe('ConversationController', () => {
     await b.runtime.dispose()
   })
 
-  it('classifies image MIME drafts as images and every other file as an uploading file draft', async () => {
+  it('classifies image, document, and generic file drafts from MIME then extension', async () => {
     const b = await bench()
     const created = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:preview')
     const session = b.runtime.sessions.binding('s1')!.session
@@ -146,24 +146,91 @@ describe('ConversationController', () => {
       ok: true as const,
       value: {
         receiptId: 'receipt-1' as never,
-        file: { attachmentId: 'sha256:1' as never, name: 'notes.pdf', bytes: 2 },
+        file: { attachmentId: 'sha256:1' as never, name: 'notes.txt', bytes: 2 },
       },
     }))
     ;(session as { uploadFile?: unknown }).uploadFile = uploadFile
     const drafts = b.root.createDrafts(session.sessionId, [
       new File([Uint8Array.of(1)], 'valid.png', { type: 'image/png' }),
-      new File([Uint8Array.of(2)], 'notes.pdf', { type: 'application/pdf' }),
+      new File([Uint8Array.of(2)], 'paper.pdf', { type: 'application/pdf' }),
+      // No browser MIME: the extension fallback still selects the document path.
+      new File([Uint8Array.of(3)], 'slides.pptx', { type: '' }),
+      // Neither an image nor a document: the background-upload path.
+      new File([Uint8Array.of(4)], 'notes.txt', { type: 'text/plain' }),
+      // No dot at all: still the generic path, never a document.
+      new File([Uint8Array.of(5)], 'LICENSE', { type: 'text/plain' }),
     ])
-    expect(drafts.map(draft => draft.kind)).toEqual(['image', 'file'])
+    expect(drafts.map(draft => draft.kind)).toEqual(['image', 'document', 'document', 'file', 'file'])
     expect(created).toHaveBeenCalledTimes(1)
-    const fileDraft = drafts[1]!
+    const fileDraft = drafts[3]!
     expect(b.root.fileUploads.getSnapshot()[fileDraft.id]?.status).toBe('uploading')
     await vi.waitFor(() => {
       expect(b.root.fileUploads.getSnapshot()[fileDraft.id]?.status).toBe('ready')
     })
-    expect(uploadFile).toHaveBeenCalledOnce()
+    expect(uploadFile).toHaveBeenCalledTimes(2)
     expect(uploadFile.mock.calls[0]?.[0]).toBe((fileDraft as { file: File }).file)
     created.mockRestore()
+    await b.runtime.dispose()
+  })
+
+  it('serializes document drafts as inline base64 without uploading, and releases them without upload state', async () => {
+    const b = await bench()
+    const session = b.runtime.sessions.binding('s1')!.session
+    const uploadFile = vi.fn(() => Promise.reject(new Error('document upload attempted')))
+    ;(session as { uploadFile?: unknown }).uploadFile = uploadFile
+    class RecordingReader {
+      onload: (() => void) | null = null
+      onerror: (() => void) | null = null
+      error = new Error('read failed')
+      result = ''
+      readAsDataURL(file: File): void {
+        this.result = `data:${file.type};base64,QUJD`
+        queueMicrotask(() => this.onload?.())
+      }
+    }
+    vi.stubGlobal('FileReader', RecordingReader)
+    try {
+      const drafts = b.root.createDrafts(session.sessionId, [
+        new File([Uint8Array.of(1, 2, 3)], 'paper.docx', {
+          type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        }),
+        // No MIME and no name: the extension alone picks the document path and
+        // the wire part omits the display name.
+        new File([Uint8Array.of(4)], 'deck.pptx', { type: '' }),
+        new File([Uint8Array.of(5)], '', {
+          type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        }),
+      ])
+      expect(drafts.map(draft => draft.kind)).toEqual(['document', 'document', 'document'])
+      expect(uploadFile).not.toHaveBeenCalled()
+      expect(b.root.fileUploads.getSnapshot()).toEqual({})
+      await expect(b.root.serializeDraftAttachments(drafts.map(draft => draft.id))).resolves.toEqual({
+        attachments: [
+          {
+            type: 'document',
+            mediaType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            data: 'QUJD',
+            name: 'paper.docx',
+          },
+          {
+            type: 'document',
+            mediaType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+            data: 'QUJD',
+            name: 'deck.pptx',
+          },
+          {
+            type: 'document',
+            mediaType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+            data: 'QUJD',
+          },
+        ],
+      })
+      b.root.releaseDraftAttachment(drafts[0]!.id)
+      expect(b.root.resolveDraftAttachments([drafts[0]!.id])).toEqual([])
+      expect(b.root.resolveDraftAttachments([drafts[1]!.id])).toHaveLength(1)
+    } finally {
+      vi.unstubAllGlobals()
+    }
     await b.runtime.dispose()
   })
 
@@ -319,7 +386,7 @@ describe('ConversationController', () => {
     })
     ;(source as { uploadFile?: unknown }).uploadFile = sourceUpload
     const [attachment] = b.root.createDrafts(source.sessionId, [
-      new File([Uint8Array.of(4)], 'carry.pdf', { type: 'application/pdf' }),
+      new File([Uint8Array.of(4)], 'carry.bin', { type: 'application/octet-stream' }),
     ])
     if (attachment === undefined) throw new Error('file draft missing')
     await vi.waitFor(() => { expect(sourceUpload).toHaveBeenCalledOnce() })
@@ -329,7 +396,7 @@ describe('ConversationController', () => {
         ok: true as const,
         value: {
           receiptId: 'target-receipt' as never,
-          file: { attachmentId: 'target-file' as never, name: 'carry.pdf', bytes: 1 },
+          file: { attachmentId: 'target-file' as never, name: 'carry.bin', bytes: 1 },
         },
       })),
     }
@@ -340,7 +407,7 @@ describe('ConversationController', () => {
     await vi.waitFor(() => {
       expect(b.root.fileUploads.getSnapshot()[attachment.id]).toEqual({
         status: 'ready', receiptId: 'target-receipt',
-        file: { attachmentId: 'target-file', name: 'carry.pdf', bytes: 1 },
+        file: { attachmentId: 'target-file', name: 'carry.bin', bytes: 1 },
       })
     })
     await b.runtime.dispose()
@@ -360,7 +427,7 @@ describe('ConversationController', () => {
     })
     ;(session as { uploadFile?: unknown }).uploadFile = uploadFile
     const [attachment] = b.root.createDrafts(session.sessionId, [
-      new File([Uint8Array.of(5)], 'removed.pdf', { type: 'application/pdf' }),
+      new File([Uint8Array.of(5)], 'removed.bin', { type: 'application/octet-stream' }),
     ])
     if (attachment === undefined) throw new Error('file draft missing')
     await vi.waitFor(() => { expect(uploadFile).toHaveBeenCalledOnce() })
@@ -385,11 +452,11 @@ describe('ConversationController', () => {
       ok: true as const,
       value: {
         receiptId: 'send-receipt' as never,
-        file: { attachmentId: 'send-file' as never, name: 'sent.pdf', bytes: 1 },
+        file: { attachmentId: 'send-file' as never, name: 'sent.bin', bytes: 1 },
       },
     }))
     const [attachment] = b.root.createDrafts(session.sessionId, [
-      new File([Uint8Array.of(6)], 'sent.pdf', { type: 'application/pdf' }),
+      new File([Uint8Array.of(6)], 'sent.bin', { type: 'application/octet-stream' }),
     ])
     if (attachment === undefined) throw new Error('file draft missing')
     await vi.waitFor(() => {
@@ -407,7 +474,7 @@ describe('ConversationController', () => {
     expect(b.prompt.mock.calls[0]?.[3]).toBe('file-rpc-id')
     retire?.({
       reason: 'observed',
-      attachments: [{ attachmentId: 'send-file', name: 'sent.pdf', bytes: 1 }],
+      attachments: [{ attachmentId: 'send-file', name: 'sent.bin', bytes: 1 }],
     })
     await expect(sending).resolves.toEqual({ kind: 'success' })
     expect(b.root.resolveDraftAttachments([attachment.id])).toEqual([])
@@ -428,7 +495,7 @@ describe('ConversationController', () => {
       },
     )
     b.root.createDrafts(session.sessionId, [
-      new File([Uint8Array.of(7)], 'dispose.pdf', { type: 'application/pdf' }),
+      new File([Uint8Array.of(7)], 'dispose.bin', { type: 'application/octet-stream' }),
     ])
     await vi.waitFor(() => { expect(uploadSignal).toBeDefined() })
 
@@ -744,6 +811,34 @@ describe('sendSession submission echo', () => {
     await expect(b.root.sendSession(session, '继续', [], 'queue')).resolves.toEqual({ kind: 'success' })
     expect(beginSubmission).not.toHaveBeenCalled()
     expect(prompt).toHaveBeenCalledWith([{ type: 'text', text: '继续' }], 'queue', undefined)
+    await b.runtime.dispose()
+  })
+
+  it('keeps documents out of the echo attachment list while prompting their inline part', async () => {
+    const b = await echoBench()
+    try {
+      const session = b.runtime.sessions.binding('s1')!.session
+      const [attachment] = b.root.createDrafts(session.sessionId, [
+        new File([Uint8Array.of(1, 2, 3)], 'paper.pdf', { type: 'application/pdf' }),
+      ])
+      const sending = b.root.sendSession(session, '读一下', [attachment!.id], 'queue')
+      const echo = b.beginSubmission.mock.calls[0]?.[0]
+      // Document chips come from the durable user message, not the local echo:
+      // the echo's attachment union carries image previews and file receipts
+      // only, and a document contributes neither.
+      expect(echo?.attachments).toEqual([])
+      await vi.waitFor(() => { expect(b.prompt).toHaveBeenCalledOnce() })
+      expect(b.prompt.mock.calls[0]?.[0]).toEqual([
+        { type: 'document', mediaType: 'application/pdf', data: expect.any(String) as string, name: 'paper.pdf' },
+        { type: 'text', text: '读一下' },
+      ])
+      b.retire.onRetire?.({ reason: 'observed', attachments: [] })
+      await expect(sending).resolves.toEqual({ kind: 'success' })
+      expect(b.root.resolveDraftAttachments([attachment!.id])).toEqual([])
+      expect(b.revoked).not.toHaveBeenCalled()
+    } finally {
+      b.restore()
+    }
     await b.runtime.dispose()
   })
 })

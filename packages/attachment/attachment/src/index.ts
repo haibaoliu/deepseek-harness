@@ -6,15 +6,20 @@ import { AttachmentError, isAttachmentError as matchesAttachmentError } from './
 import type {
   AdmittedPromptContentPart,
   AttachmentAdmissionPart,
+  DocumentAttachmentLimits,
+  DocumentAttachmentRef,
   EncodedFileAttachment,
   FileAttachmentRef,
   ImageAttachmentLimits,
   ImageAttachmentRef,
   ImageRequestPolicy,
   RequestImageAttachment,
+  SaveDocumentAttachment,
   SaveFileAttachment,
   SaveFileStreamAttachment,
   SaveImageAttachment,
+  SavedDocumentAttachment,
+  StoredDocumentAttachment,
   StoredImageAttachment,
 } from './types.ts'
 
@@ -27,6 +32,9 @@ export type {
   AttachmentId as AttachmentIdType,
   AdmittedPromptContentPart,
   AttachmentAdmissionPart,
+  DocumentAttachmentLimits,
+  DocumentAttachmentRef,
+  DocumentMediaType,
   EncodedFileAttachment,
   EncodedImageAttachment,
   FileAttachmentRef,
@@ -36,9 +44,12 @@ export type {
   ImageMediaType,
   PromptContentPart,
   RequestImageAttachment,
+  SaveDocumentAttachment,
   SaveFileAttachment,
   SaveFileStreamAttachment,
   SaveImageAttachment,
+  SavedDocumentAttachment,
+  StoredDocumentAttachment,
   StoredImageAttachment,
 } from './types.ts'
 
@@ -56,6 +67,9 @@ export abstract class AttachmentStore extends Service {
 
   /** Deployment-resolved image policy used by authoritative and fast-path validation. */
   abstract readonly imageLimits: ImageAttachmentLimits
+
+  /** Deployment-resolved document policy used by authoritative and fast-path validation. */
+  abstract readonly documentLimits: DocumentAttachmentLimits
 
   /**
    * Validate one image without persisting it.
@@ -106,24 +120,31 @@ export abstract class AttachmentStore extends Service {
   /**
    * Admit one Host prompt and replace each uploaded image with its durable reference.
    * Text and durable file references pass through unchanged. A prompt without image parts performs no storage operation.
+   * Browser document parts are refused here: the host document path admits them
+   * through the dedicated document seam, which also records the model-hidden
+   * reference this image-and-file result cannot carry.
    * @param content - prompt parts in message order after file receipt resolution.
    * @returns admitted prompt parts in the same order as `content`.
-   * @throws AttachmentError when the image batch is refused.
+   * @throws AttachmentError when the image batch is refused or a document part reaches this seam.
    */
   async admitPromptContent(
     content: readonly AttachmentAdmissionPart[],
   ): Promise<AdmittedPromptContentPart[]> {
-    if (content.every(part => part.type !== 'image')) {
-      return content.map(part => part.type === 'text'
-        ? { type: 'text', text: part.text }
-        : { type: 'file', attachment: part.attachment })
-    }
-    const refs = await admitEncodedImages(this, content.filter(part => part.type === 'image'))
+    const images = content.filter(part => part.type === 'image')
+    const refs: readonly ImageAttachmentRef[] = images.length === 0
+      ? []
+      : await admitEncodedImages(this, images)
     let next = 0
     return content.map((part) => {
-      if (part.type === 'text') return { type: 'text', text: part.text }
-      if (part.type === 'file') return { type: 'file', attachment: part.attachment }
-      return { type: 'image', attachment: refs[next++] as ImageAttachmentRef }
+      switch (part.type) {
+        case 'text': return { type: 'text', text: part.text }
+        case 'file': return { type: 'file', attachment: part.attachment }
+        case 'image': return { type: 'image', attachment: refs[next++] as ImageAttachmentRef }
+        case 'document': throw new AttachmentError(
+          'Document parts are admitted by the host document path, not admitPromptContent.',
+          'INVALID_DOCUMENT',
+        )
+      }
     })
   }
 
@@ -164,6 +185,30 @@ export abstract class AttachmentStore extends Service {
    * @throws the signal reason when aborted, or a storage error when verification fails.
    */
   abstract readImage(ref: ImageAttachmentRef, signal?: AbortSignal): Promise<StoredImageAttachment>
+
+  /**
+   * Validate one document without persisting it.
+   * Batch callers validate every member before saving any member.
+   * @param input - encoded bytes, declared media type, and optional display name.
+   * @returns completion after the document bytes have been fully inspected and text extracted.
+   */
+  abstract validateDocument(input: SaveDocumentAttachment): Promise<void>
+
+  /**
+   * Validate and durably commit one document before its owning session event is appended.
+   * @param input - encoded bytes, declared media type, and optional display name.
+   * @returns a durable content-addressed reference plus the extracted model-visible text.
+   */
+  abstract saveDocument(input: SaveDocumentAttachment): Promise<SavedDocumentAttachment>
+
+  /**
+   * Read one document and verify that bytes still match the recorded reference.
+   * @param ref - durable reference from the session log.
+   * @param signal - optional cancellation for backend read and verification work.
+   * @returns the verified bytes and canonical reference.
+   * @throws the signal reason when aborted, or a storage error when verification fails.
+   */
+  abstract readDocument(ref: DocumentAttachmentRef, signal?: AbortSignal): Promise<StoredDocumentAttachment>
 
   /**
    * Locate the provider-owned normalized object in the harness host filesystem.
@@ -258,7 +303,6 @@ export abstract class AttachmentStore extends Service {
       'ATTACHMENT_PROJECTION_UNSUPPORTED',
     ))
   }
-
 }
 
 export default AttachmentStore

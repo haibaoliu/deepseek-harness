@@ -1245,6 +1245,34 @@ describe('ChatView', () => {
     expect(view.getByText('TXT 23B')).toBeTruthy()
   })
 
+  it('renders durable document chips with their name and size, falling back to the localized label', () => {
+    const document = (seq: number, name: string | undefined, bytes: number): UserMessageNode => ({
+      kind: 'user',
+      seq,
+      time: seq * 1_000,
+      content: [
+        { type: 'text', text: 'docs' },
+        {
+          type: 'document',
+          attachment: {
+            attachmentId: `sha256:doc-${String(seq)}`,
+            mediaType: 'application/pdf',
+            bytes,
+            ...(name === undefined ? {} : { name }),
+          },
+        },
+      ] as never,
+      source: null,
+    })
+    const h = makeHarness({ nodes: [document(1, 'spec.pdf', 12), document(2, undefined, 7)] })
+    const view = render(<h.ChatView {...h.props} />)
+    expect(view.getByTitle('spec.pdf')).toBeTruthy()
+    expect(view.getByText('PDF 12B')).toBeTruthy()
+    // An unnamed durable document keeps the localized label as its chip name.
+    expect(view.getByText('文档')).toBeTruthy()
+    expect(view.getByText('7B')).toBeTruthy()
+  })
+
   it('animates only the latest unresolved model retry', () => {
     const retryNode = retry(2)
     const nextRetry = { ...retry(3), turn: 2, retry: 2 }

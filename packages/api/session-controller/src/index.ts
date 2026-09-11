@@ -3,6 +3,7 @@
 import { hostname } from 'node:os'
 import { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
+import { dshHomePath } from '@deepseek-ai/dsh-home-paths'
 import { errorChain } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-client-file-upload'
 import { canOpenNativePath, nativeFileManager, openNativePath, revealNativePath } from '@deepseek-ai/dsh-native-command'
@@ -81,6 +82,12 @@ export interface SessionControllerInternals {
   readonly revealPath?: (path: string, signal: AbortSignal) => Promise<void>
   /** Native handoff availability probe. */
   readonly canOpenPath?: () => boolean
+  /**
+   * Root under which a workspace-less temporary Session gets a fresh scratch
+   * directory for its cwd. Omission uses the deployment scratch root; an
+   * explicit `undefined` keeps the shared default cwd.
+   */
+  readonly temporarySessionRoot?: string | undefined
 }
 
 /** Host service backing the generated `ctx.remote.session` namespace. */
@@ -121,7 +128,12 @@ export class SessionController extends TypertRemoteService {
     super(ctx, 'sessionController', { namespace: 'session' })
     installModelSelectionProjection(ctx)
     this.agents = new ApiSessionAgentController(ctx)
-    this.commands = new SessionCommandController(ctx, this.agents, process.cwd())
+    this.commands = new SessionCommandController(
+      ctx,
+      this.agents,
+      process.cwd(),
+      'temporarySessionRoot' in internals ? internals.temporarySessionRoot : dshHomePath('tmp-sessions'),
+    )
     ctx.effect(() => ctx.fileUploads.registerAgentResolver(async (sessionId) => {
       const result = await this.agents.resolveAgent(sessionId)
       if ('error' in result) throw result.error
@@ -350,7 +362,7 @@ export class SessionController extends TypertRemoteService {
   }
 
   /**
-   * Read one image proven reachable from the addressed Session log.
+   * Read one image or document proven reachable from the addressed Session log.
    * @param request - Session and attachment identities used for authorization.
    * @returns the durable attachment reference and base64-encoded bytes.
    */

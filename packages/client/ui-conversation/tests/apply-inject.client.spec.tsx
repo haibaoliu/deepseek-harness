@@ -38,7 +38,7 @@ async function bench() {
     ok: true as const,
     value: {
       receiptId: 'root-receipt' as never,
-      file: { attachmentId: 'root-file' as never, name: 'draft.pdf', bytes: 1 },
+      file: { attachmentId: 'root-file' as never, name: 'draft.bin', bytes: 1 },
     },
   }))
   const uploads = new Map<SessionId, (...args: unknown[]) => Promise<unknown>>([[ROOT, rootUpload]])
@@ -283,7 +283,7 @@ describe('Conversation inject API', () => {
     const b = await bench()
     const composer = b.composerApi(ROOT)
     expect(composer.addFiles?.([
-      new File([Uint8Array.of(1)], 'draft.pdf', { type: 'application/pdf' }),
+      new File([Uint8Array.of(1)], 'draft.bin', { type: 'application/octet-stream' }),
     ])).toBeNull()
     const controller = b.runtime.ctx.get('conversation') as unknown as {
       releaseDraftAttachment(id: string): void
@@ -332,7 +332,7 @@ describe('Conversation inject API', () => {
     const { state, actions } = b.inputApi(ROOT)
     actions.setDraft('carry me')
     expect(b.composerApi(ROOT).addFiles?.([
-      new File([Uint8Array.of(1)], 'draft.pdf', { type: 'application/pdf' }),
+      new File([Uint8Array.of(1)], 'draft.bin', { type: 'application/octet-stream' }),
     ])).toBeNull()
     await vi.waitFor(() => { expect(b.rootUpload).toHaveBeenCalledOnce() })
 
@@ -346,7 +346,7 @@ describe('Conversation inject API', () => {
       ok: true,
       value: {
         receiptId: 'target-receipt' as never,
-        file: { attachmentId: 'target-file' as never, name: 'draft.pdf', bytes: 1 },
+        file: { attachmentId: 'target-file' as never, name: 'draft.bin', bytes: 1 },
       },
     }))
     b.uploads.set(other, targetUpload)

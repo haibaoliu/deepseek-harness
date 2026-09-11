@@ -23,7 +23,7 @@ import {
   expandAssistantStream,
   type AssistantStreamRecord,
 } from '@deepseek-ai/dsh-llm/assistant-stream'
-import type { AttachmentIdType, ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
+import type { AttachmentIdType, DocumentAttachmentRef, ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import type {
   SessionEvent,
   SessionId,
@@ -284,6 +284,14 @@ type FixturePromptPart =
     readonly data: string
     readonly name?: string
   }
+  | {
+    readonly type: 'document'
+    readonly mediaType: DocumentAttachmentRef['mediaType']
+    readonly data: string
+    readonly name?: string
+  }
+  // Generic staged-file parts cite a Host receipt this fixture does not mint.
+  | { readonly type: 'file'; readonly receiptId: string }
 
 interface FixtureSessionApi {
   list(request: { readonly cursor?: string }): Promise<ConnectionRpcResult<unknown>>
@@ -1859,7 +1867,7 @@ function createFixtureWorld(options: FixtureOptions): FixtureWorld {
     session.sessionId,
     { provider: 'deepseek-official', model: 'deepseek-v4-flash' },
   ]))
-  const attachments = new Map<string, { attachment: ImageAttachmentRef; data: string }>([[
+  const attachments = new Map<string, { attachment: ImageAttachmentRef | DocumentAttachmentRef; data: string }>([[
     String(FIXTURE_IMAGE_REF.attachmentId),
     { attachment: FIXTURE_IMAGE_REF, data: FIXTURE_IMAGE_DATA },
   ]])
@@ -3316,22 +3324,41 @@ function createFixtureWorld(options: FixtureOptions): FixtureWorld {
       // First accepted prompt appends events: the summary stops being blank.
       summary.blank = false
       const userText = content.map(b => (b.type === 'text' ? b.text : '')).join('')
-      const durable: ContentBlock[] = content.map((block) => {
-        if (block.type === 'text') return block
-        const attachment: ImageAttachmentRef = {
-          attachmentId: `fixture:${randomUuid()}` as AttachmentIdType,
+      const durable: ContentBlock[] = content.flatMap((block): ContentBlock[] => {
+        if (block.type === 'text') return [block]
+        // File receipts address Host-stored bytes this fixture never mints.
+        if (block.type === 'file') return []
+        const attachmentId = `fixture:${randomUuid()}` as AttachmentIdType
+        const bytes = Math.max(
+          1,
+          Math.floor(block.data.length * 3 / 4)
+            - (block.data.endsWith('==') ? 2 : block.data.endsWith('=') ? 1 : 0),
+        )
+        if (block.type === 'image') {
+          const attachment: ImageAttachmentRef = {
+            attachmentId,
+            mediaType: block.mediaType,
+            bytes,
+            width: 160,
+            height: 90,
+            ...block.name === undefined ? {} : { name: block.name },
+          }
+          attachments.set(String(attachment.attachmentId), { attachment, data: block.data })
+          return [{ type: 'image', attachment }]
+        }
+        // A document reaches the model as extracted text beside its durable
+        // reference: the fixture mirrors the Host's deterministic extraction.
+        const attachment: DocumentAttachmentRef = {
+          attachmentId,
           mediaType: block.mediaType,
-          bytes: Math.max(
-            1,
-            Math.floor(block.data.length * 3 / 4)
-              - (block.data.endsWith('==') ? 2 : block.data.endsWith('=') ? 1 : 0),
-          ),
-          width: 160,
-          height: 90,
+          bytes,
           ...block.name === undefined ? {} : { name: block.name },
         }
         attachments.set(String(attachment.attachmentId), { attachment, data: block.data })
-        return { type: 'image', attachment }
+        return [
+          { type: 'text', text: `${block.name ?? 'document'}:\n\n(fixture extracted text)` },
+          { type: 'document', attachment },
+        ]
       })
       // The host echoes the prompt's requestId as the user source's rpcId;
       // the Session object retires its local submission echo on it. The

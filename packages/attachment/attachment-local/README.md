@@ -1,5 +1,5 @@
 ---
-description: "Local storage for your attached images below DSH_HOME, for users and maintainers choosing or debugging where image attachments are kept."
+description: "Local storage for your attached images, files, and documents below DSH_HOME, for users and maintainers choosing or debugging where image and document attachments are kept."
 kind: "package-reference"
 ---
 
@@ -9,7 +9,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-Store images and generic file attachments durably below `DSH_HOME` on the machine running DSH. Images are validated, normalized for model requests, and cached per route; generic files are preserved byte-for-byte without admission limits. Identical bytes are stored once even when uploads use different display names, reads verify file length and content, and admitted images remain readable if limits later tighten. The shipped `dsh` composition uses this package without configuration. Objects remain local to one machine and are never deleted automatically.
+Store images and generic file attachments durably below `DSH_HOME` on the machine running DSH. Images are validated, normalized for model requests, and cached per route; generic files are preserved byte-for-byte without admission limits. Text-bearing documents are validated, stored byte-for-byte, and reduced to extracted plain text that reaches the model as ordinary text. Identical bytes are stored once even when uploads use different display names, reads verify file length and content, and admitted images remain readable if limits later tighten. The shipped `dsh` composition uses this package without configuration. Objects remain local to one machine and are never deleted automatically.
 
 ## Table of Contents
 
@@ -43,6 +43,9 @@ Mount the plugin with no required configuration. The defaults below define what 
 | `maxMessageImageBytes` | `200 MiB` | Maximum aggregate encoded source bytes in one submitted message |
 | `maxImagePixels` | `64,000,000` | Maximum source width multiplied by height |
 | `maxImageDimension` | `8192` | Maximum source width or height |
+| `maxDocumentBytes` | `25 MiB` | Maximum encoded source bytes accepted for one document |
+| `maxDocumentsPerMessage` | `10` | Maximum document count accepted in one submitted message |
+| `maxMessageDocumentBytes` | `100 MiB` | Maximum aggregate encoded source bytes for documents in one submitted message |
 | `normalizedImageMaxPixels` | `2048 × 2048` | Total-pixel budget of the stored normalized image |
 | `normalizedImageMaxDimension` | `8192` | Maximum long edge after applying the total-pixel budget |
 | `normalizedImageMaxBytes` | `4 MiB` | Encoded-byte target; the smallest quality-ladder output is kept when none fits |
@@ -52,15 +55,19 @@ The generated [configuration catalog](../../../docs/config-catalog.md#deepseek-a
 
 ### Where your images are stored and how long they last
 
-Attached images are kept below `<DSH_HOME>/attachments/v1` on this machine. Stored images are never deleted automatically, identical images are stored only once, and a later tightening of the limits never makes already-saved images unreadable. If your images must be readable from another machine, this package is not the right fit.
+Attached images are kept below `<DSH_HOME>/attachments/v1` on this machine. Stored images and documents are never deleted automatically, identical bytes are stored only once, and a later tightening of the limits never makes already-saved images unreadable. If your images must be readable from another machine, this package is not the right fit.
 
 ### What happens when you attach an image
 
 Attach an image and its source limits, media, dimensions, and pixels are checked before it is normalized and saved. EXIF orientation is applied, metadata and color profiles are removed, transparency is preserved, and the raster is reduced under a total-pixel budget plus a long-edge cap. Alpha images use WebP and opaque images use JPEG on the shared 85/75/60 quality ladder; the smallest output is retained when every candidate exceeds the byte target. An accepted image reappears in history and later turns, including after restart; the selected model route receives a cached request version and, when its filesystem maps the host object, a read-only execution-world path.
 
+### What happens when you attach a document
+
+Attach a Markdown, PDF, DOCX, or PPTX document and its byte limit and declared media type are checked against the container bytes before the plain text is extracted. The exact original bytes are stored content-addressed, the extracted text enters the prompt as an ordinary text block, and a model-hidden reference is logged for rendering and replay. The encoded document itself is never submitted to a model. Markdown is decoded as UTF-8, PDF text is extracted with `unpdf`, and DOCX/PPTX text is scraped from the OOXML runs after a `fflate` unzip.
+
 ### What can go wrong
 
-An image can be refused when you attach it: unsupported format, over the byte, pixel, or per-side dimension limits, or bytes that do not match their declared type. On a later read, an image that was deleted or corrupted on disk fails with a clear error. Each failure carries a stable code so the client and protocol adapters can explain it in their own words.
+An image can be refused when you attach it: unsupported format, over the byte, pixel, or per-side dimension limits, or bytes that do not match their declared type. A document can be refused when its bytes are empty, exceed the document byte limit, do not match the declared container, or cannot be decoded or text-extracted. On a later read, an image or document that was deleted or corrupted on disk fails with a clear error. Each failure carries a stable code so the client and protocol adapters can explain it in their own words.
 
 -----
 
@@ -78,6 +85,7 @@ This section explains the durability and verification design behind the storage,
 - **Normalize once, project per route.** Admission persists one provider-independent normalized attachment; request projection derives deterministic variants without rewriting durable history.
 - **Lazy alpha-routed encoding.** Alpha images use WebP and opaque images use JPEG; quality candidates run in 85/75/60 order, and the smallest output is retained when none meets the encoded-byte target.
 - **Limits are write-time policy.** Byte, total-pixel, and per-side dimension limits bind admission only, so tightening them later never makes admitted history unreadable.
+- **Documents become text, never wire bytes.** Admission verifies the declared container against its magic bytes, stores the exact original bytes content-addressed, and extracts plain text; the model receives only that text, so provider format support never enters the picture.
 
 ### Write and read paths
 
@@ -89,6 +97,8 @@ Request versions live below `<DSH_HOME>/cache/attachments/request-images/`, reso
 
 Generic-file bytes have one canonical object at `<DSH_HOME>/attachments/v1/file-objects/<digest-prefix>/<digest>`. Each reference path at `<DSH_HOME>/attachments/v1/files/<digest-prefix>/<digest>/<name>` is a read-only hard link, so different names for equal bytes do not duplicate disk content. `readFileStream` reads the reference path in bounded chunks and verifies the complete digest and recorded byte count before a consumer can finish successfully. A missing, changed, or truncated object fails its consumer instead of producing a complete export with different bytes.
 
+Documents are stored verbatim in the same `<DSH_HOME>/attachments/v1/objects/<sha256-prefix>/<sha256>` tree as normalized images, published through the same staged-write and fsync chain. Admission accepts up to 10 documents and 100 MiB of source bytes per message; one document may use up to 25 MiB. Markdown must decode as UTF-8; PDF must start with `%PDF-`; DOCX and PPTX must be ZIP containers carrying `word/document.xml` or `ppt/presentation.xml`. `saveDocument` returns both the durable reference and the extracted text, and `readDocument` re-verifies the digest and recorded byte count.
+
 ### Source map
 
 | File | Role |
@@ -96,6 +106,7 @@ Generic-file bytes have one canonical object at `<DSH_HOME>/attachments/v1/file-
 | [`src/index.ts`](src/index.ts) | Plugin entry: `LocalAttachmentStore`, `Config` schema, defaults |
 | [`src/store.ts`](src/store.ts) | Content-addressed write and verified read: staging, hard-link publish, fsync chain, digest verification |
 | [`src/file-store.ts`](src/file-store.ts) | Verbatim streamed file writes, verified streamed reads, and safe stored filenames |
+| [`src/document.ts`](src/document.ts) | Document container verification and plain-text extraction for Markdown, PDF, DOCX, and PPTX |
 | [`src/normalization.ts`](src/normalization.ts) + [`src/encoding.ts`](src/encoding.ts) | Provider-independent normalization and bounded format/quality candidates |
 | [`src/request-image.ts`](src/request-image.ts) | Route-specific request transforms, cache identity, and singleflight |
 | [`src/image.ts`](src/image.ts) | Full raster decode and metadata verification |
@@ -120,7 +131,7 @@ For the full service contract and payload types, read the subsystem reference; f
 <a id="model-experience"></a>
 ## Model Experience
 
-Indirectly, through request descriptors. A mapped execution filesystem lets the model see each image's identity, dimensions, media type, read-only process path, writable-copy extension, and normalization warning alongside the request bytes. Generic files project as text handles naming their identity and read-only process path; when no mapping exists, the handle states that the execution environment cannot read the file.
+Indirectly, through request descriptors. A mapped execution filesystem lets the model see each image's identity, dimensions, media type, read-only process path, writable-copy extension, and normalization warning alongside the request bytes. Generic files project as text handles naming their identity and read-only process path; when no mapping exists, the handle states that the execution environment cannot read the file. Documents reach the model as extracted plain text carried in an ordinary `text` block; the encoded document itself is never submitted to a model.
 
 #### KV Cache effect
 

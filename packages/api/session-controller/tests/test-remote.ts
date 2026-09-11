@@ -6,6 +6,7 @@ import type { ModelSelection as AgentModelSelection } from '@deepseek-ai/dsh-age
 import type {
   AdmittedPromptContentPart,
   AttachmentAdmissionPart,
+  DocumentAttachmentLimits,
   ImageAttachmentLimits,
 } from '@deepseek-ai/dsh-attachment'
 import type { SessionEvent, SessionHeader, SessionId } from '@deepseek-ai/dsh-session'
@@ -93,6 +94,13 @@ export interface TestSessionRemoteDefaults {
   readonly openPath?: (path: string, signal: AbortSignal) => Promise<void>
   readonly revealPath?: (path: string, signal: AbortSignal) => Promise<void>
   readonly canOpenPath?: () => boolean
+  /** Scratch root for workspace-less temporary Sessions; absent keeps {@link cwd}. */
+  readonly temporarySessionRoot?: string
+  /**
+   * Omit the scratch-root internals key so the controller resolves the
+   * deployment root from `DSH_HOME`, exactly as production boot does.
+   */
+  readonly useDeploymentScratchRoot?: boolean
 }
 
 const installed = new WeakMap<Context, SessionController>()
@@ -104,6 +112,13 @@ const TEST_IMAGE_LIMITS: ImageAttachmentLimits = Object.freeze({
   maxImagePixels: 40_000_000,
   maxImageDimension: 2000,
   mediaTypes: Object.freeze(['image/png'] as const),
+})
+
+const TEST_DOCUMENT_LIMITS: DocumentAttachmentLimits = Object.freeze({
+  maxDocumentBytes: 5 * 1024 * 1024,
+  maxDocumentsPerMessage: 20,
+  maxMessageDocumentBytes: 100 * 1024 * 1024,
+  mediaTypes: Object.freeze(['text/markdown'] as const),
 })
 
 /** Compact header-and-events point read a persistence double declares per session. */
@@ -254,15 +269,26 @@ function installControllers(
   if (ctx.get('attachments') === undefined) {
     ctx.provide('attachments', {
       imageLimits: TEST_IMAGE_LIMITS,
+      documentLimits: TEST_DOCUMENT_LIMITS,
       admitPromptContent: async (
         content: readonly AttachmentAdmissionPart[],
       ): Promise<AdmittedPromptContentPart[]> => {
         const admitted: AdmittedPromptContentPart[] = []
         for (const part of content) {
           if (part.type === 'image') throw new Error('test did not configure image persistence')
+          if (part.type === 'document') {
+            throw new Error('the production prompt path admits documents before the image seam')
+          }
           admitted.push(part)
         }
         return admitted
+      },
+      validateDocument: async (): Promise<void> => {},
+      saveDocument: async (): Promise<never> => {
+        throw new Error('test did not configure document persistence')
+      },
+      readDocument: async (): Promise<never> => {
+        throw new Error('test did not configure document persistence')
       },
     } as never)
   }
@@ -284,9 +310,12 @@ function installControllers(
         ...defaults.nativeOpen === undefined ? {} : { nativeOpen: defaults.nativeOpen },
       },
       {
-        ...defaults.openPath === undefined ? {} : { openPath: defaults.openPath },
-        ...defaults.revealPath === undefined ? {} : { revealPath: defaults.revealPath },
-        ...defaults.canOpenPath === undefined ? {} : { canOpenPath: defaults.canOpenPath },
+        ...defaults.useDeploymentScratchRoot === true
+          ? {}
+          : { temporarySessionRoot: defaults.temporarySessionRoot },
+        ...(defaults.openPath === undefined ? {} : { openPath: defaults.openPath }),
+        ...(defaults.revealPath === undefined ? {} : { revealPath: defaults.revealPath }),
+        ...(defaults.canOpenPath === undefined ? {} : { canOpenPath: defaults.canOpenPath }),
       },
     )
   } finally {

@@ -12,9 +12,11 @@ import css from './MessageItem.module.css'
 
 type UserImage = Extract<UserMessageNode['content'][number], { type: 'image' }>
 type UserFile = Extract<UserMessageNode['content'][number], { type: 'file' }>
+type UserDocument = Extract<UserMessageNode['content'][number], { type: 'document' }>
 type PresentedAttachment =
   | { readonly type: 'image'; readonly image: MessageImageSource }
   | { readonly type: 'file'; readonly file: UserFile['attachment'] }
+  | { readonly type: 'document'; readonly document: UserDocument['attachment'] }
 
 function contentParts(content: readonly unknown[]): {
   text: string
@@ -33,9 +35,28 @@ function contentParts(content: readonly unknown[]): {
     else if (b.type === 'file' && b.attachment !== undefined) {
       attachments.push({ type: 'file', file: (b as UserFile).attachment })
     }
+    else if (b.type === 'document' && b.attachment !== undefined) {
+      attachments.push({ type: 'document', document: (b as UserDocument).attachment })
+    }
     else rest.push(block)
   }
   return { text: texts.join(''), attachments, rest }
+}
+
+/** One durable file or document chip above the user bubble: glyph, name, type and size. */
+function AttachmentChip({ name, bytes }: { name: string; bytes: number }): ReactNode {
+  return (
+    <span className={css.fileCard} title={name}>
+      <FileTypeIcon path={name} className={css.fileIcon} />
+      <span className={css.fileContent}>
+        <span className={css.fileName}>{name}</span>
+        <span className={css.fileMeta}>
+          {[fileExtension(name).toUpperCase().slice(0, 8), fileSizeText(bytes)]
+            .filter(Boolean).join(' ')}
+        </span>
+      </span>
+    </span>
+  )
 }
 
 function retrySeconds(milliseconds: number): number {
@@ -199,18 +220,21 @@ function UserStyleBubble({
                   })}
                 </Fragment>
               )
-              : (
-                <span key={`file:${index}`} className={css.fileCard} title={attachment.file.name}>
-                  <FileTypeIcon path={attachment.file.name} className={css.fileIcon} />
-                  <span className={css.fileContent}>
-                    <span className={css.fileName}>{attachment.file.name}</span>
-                    <span className={css.fileMeta}>
-                      {[fileExtension(attachment.file.name).toUpperCase().slice(0, 8), fileSizeText(attachment.file.bytes)]
-                        .filter(Boolean).join(' ')}
-                    </span>
-                  </span>
-                </span>
-              ))}
+              : attachment.type === 'file'
+                ? (
+                  <AttachmentChip
+                    key={`file:${index}`}
+                    name={attachment.file.name}
+                    bytes={attachment.file.bytes}
+                  />
+                )
+                : (
+                  <AttachmentChip
+                    key={`document:${index}`}
+                    name={attachment.document.name ?? t('message.document')}
+                    bytes={attachment.document.bytes}
+                  />
+                ))}
           </div>
         )}
         {showBubble && <div className={css.bubble}>

@@ -6,6 +6,7 @@ import type {
   ComposerAttachment, ComposerAttachmentsOwnerProps, ComposerAttachmentsProps,
 } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { ComposerAttachments } from '../src/client/ComposerAttachments.tsx'
+import { FileCard } from '../src/FileCard.tsx'
 
 beforeEach(() => {
   vi.stubGlobal('ResizeObserver', class {
@@ -29,6 +30,8 @@ const t = ((key: string, params?: Readonly<Record<string, unknown>>): string => 
     'file.uploading': '上传中…',
     'file.uploadFailed': '上传失败，点击重试',
     'file.label': '文件',
+    'document.pending': '待发送文档',
+    'document.label': '文档',
     'image.pending': '待发送图片',
     'image.original': '原图',
     'image.preview': '原图预览',
@@ -44,6 +47,10 @@ const t = ((key: string, params?: Readonly<Record<string, unknown>>): string => 
   if (key === 'file.retry') {
     const name = params?.name
     return `重试上传 ${typeof name === 'string' ? name : ''}`
+  }
+  if (key === 'document.remove') {
+    const name = params?.name
+    return `移除文档 ${typeof name === 'string' ? name : ''}`
   }
   if (key === 'image.remove') {
     const name = params?.name
@@ -71,6 +78,15 @@ function fileDraft(id: string, name = `${id}.pdf`): ComposerAttachment {
     kind: 'file',
     id: id as ComposerAttachment['id'],
     file: new File([Uint8Array.of(1, 2, 3)], name, { type: 'application/pdf' }),
+  }
+}
+
+function documentDraft(id: string, name = `${id}.pdf`): ComposerAttachment {
+  return {
+    kind: 'document',
+    id: id as ComposerAttachment['id'],
+    file: new File([Uint8Array.of(1, 2, 3)], name, { type: 'application/pdf' }),
+    mediaType: 'application/pdf',
   }
 }
 
@@ -275,5 +291,63 @@ describe('ComposerAttachments file drafts', () => {
       },
     })} />)
     expect(view.getByTitle('.env').textContent).toContain('ENV 3B')
+  })
+})
+
+describe('ComposerAttachments document drafts', () => {
+  it('renders a document chip with its name, size, and remove control without a retry affordance', () => {
+    const onRemoveAttachment = vi.fn()
+    const onRetryFile = vi.fn()
+    const view = render(<ComposerAttachments {...props({
+      attachments: [fileDraft('middle'), documentDraft('doc')],
+      uploads: {
+        middle: {
+          status: 'ready', receiptId: 'receipt-middle' as never,
+          file: { attachmentId: 'file-middle' as never, name: 'middle.pdf', bytes: 3 },
+        },
+      },
+      onRemoveAttachment,
+      onRetryFile,
+    })} />)
+    const group = view.getByRole('group', { name: '待发送附件' })
+    // A document inlines at send: it shows its own name and size, never the
+    // upload copy, and never a retry control.
+    expect(group.textContent).toContain('doc.pdf')
+    expect(group.textContent).toContain('PDF 3B')
+    expect(view.queryByRole('button', { name: '重试上传 doc.pdf' })).toBeNull()
+    fireEvent.click(view.getByRole('button', { name: '移除文档 doc.pdf' }))
+    expect(onRemoveAttachment).toHaveBeenCalledWith('doc')
+    expect(onRetryFile).not.toHaveBeenCalled()
+  })
+
+  it('uses the localized document label when the browser supplies no name', () => {
+    const view = render(<ComposerAttachments {...props({
+      attachments: [documentDraft('unnamed', '')],
+    })} />)
+    const group = view.getByRole('group', { name: '待发送附件' })
+    expect(group.textContent).toContain('文档')
+  })
+
+  it('renders an errored card without a retry affordance when the owner offers none', () => {
+    const onRemove = vi.fn()
+    const view = render(
+      <FileCard
+        name="notes.txt"
+        bytes={3}
+        state="error"
+        labels={{
+          label: '待发送文件',
+          remove: '移除文件 notes.txt',
+          uploading: '上传中…',
+          failed: '上传失败，点击重试',
+          retry: '重试上传 notes.txt',
+        }}
+        onRemove={onRemove}
+      />,
+    )
+    expect(view.getByText('上传失败，点击重试')).toBeTruthy()
+    expect(view.queryByRole('button', { name: '重试上传 notes.txt' })).toBeNull()
+    fireEvent.click(view.getByRole('button', { name: '移除文件 notes.txt' }))
+    expect(onRemove).toHaveBeenCalledOnce()
   })
 })

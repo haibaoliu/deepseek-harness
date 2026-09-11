@@ -5,7 +5,7 @@
  */
 
 import type { Branded } from '@deepseek-ai/dsh-brand'
-import type { FileAttachmentRef, ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
+import type { DocumentAttachmentRef, FileAttachmentRef, ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import type { ToolCallId, ProviderRequestId, ReasoningEffortId } from './brand.ts'
 import type { Message } from './message.ts'
 
@@ -87,6 +87,18 @@ export interface FileBlock {
   attachment: FileAttachmentRef
 }
 
+/**
+ * A durable document reference. The model never receives this block directly:
+ * the host extracts the document text into a sibling `text` block and the
+ * adapters flatten only `text`, so a `document` block is logged for rendering
+ * and replay while staying model-hidden.
+ */
+export interface DocumentBlock {
+  type: 'document'
+  /** Immutable bytes and media-type metadata owned by the attachment service. */
+  attachment: DocumentAttachmentRef
+}
+
 /** A tool invocation requested by the model. */
 export interface ToolCallBlock {
   type: 'tool-call'
@@ -114,6 +126,7 @@ export interface ContentBlockMap {
   'reasoning': ReasoningBlock
   'image': ImageBlock
   'file': FileBlock
+  'document': DocumentBlock
   'tool-call': ToolCallBlock
   'tool-result': ToolResultBlock
 }

@@ -192,9 +192,12 @@ async saveImages(inputs: readonly SaveImageAttachment[]): Promise<readonly Image
 /**
  * Admit one Host prompt and replace each uploaded image with its durable reference.
  * Text and durable file references pass through unchanged. A prompt without image parts performs no storage operation.
+ * Browser document parts are refused here: the host document path admits them
+ * through the dedicated document seam, which also records the model-hidden
+ * reference this image-and-file result cannot carry.
  * @param content - prompt parts in message order after file receipt resolution.
  * @returns admitted prompt parts in the same order as `content`.
- * @throws AttachmentError when the image batch is refused.
+ * @throws AttachmentError when the image batch is refused or a document part reaches this seam.
  */
 async admitPromptContent( content: readonly AttachmentAdmissionPart[], ): Promise<AdmittedPromptContentPart[]>
 
@@ -231,6 +234,30 @@ abstract saveImage(input: SaveImageAttachment): Promise<ImageAttachmentRef>
  * @throws the signal reason when aborted, or a storage error when verification fails.
  */
 abstract readImage(ref: ImageAttachmentRef, signal?: AbortSignal): Promise<StoredImageAttachment>
+
+/**
+ * Validate one document without persisting it.
+ * Batch callers validate every member before saving any member.
+ * @param input - encoded bytes, declared media type, and optional display name.
+ * @returns completion after the document bytes have been fully inspected and text extracted.
+ */
+abstract validateDocument(input: SaveDocumentAttachment): Promise<void>
+
+/**
+ * Validate and durably commit one document before its owning session event is appended.
+ * @param input - encoded bytes, declared media type, and optional display name.
+ * @returns a durable content-addressed reference plus the extracted model-visible text.
+ */
+abstract saveDocument(input: SaveDocumentAttachment): Promise<SavedDocumentAttachment>
+
+/**
+ * Read one document and verify that bytes still match the recorded reference.
+ * @param ref - durable reference from the session log.
+ * @param signal - optional cancellation for backend read and verification work.
+ * @returns the verified bytes and canonical reference.
+ * @throws the signal reason when aborted, or a storage error when verification fails.
+ */
+abstract readDocument(ref: DocumentAttachmentRef, signal?: AbortSignal): Promise<StoredDocumentAttachment>
 
 /**
  * Locate the provider-owned normalized object in the harness host filesystem.

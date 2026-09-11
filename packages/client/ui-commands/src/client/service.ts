@@ -15,7 +15,7 @@ import type { Context } from '@deepseek-ai/cordis'
 // Type-only: pulls the ctx.remote merge and the forwarded-event key face
 // (`commands/change` rides the allowlist) into this program.
 import type {} from '@deepseek-ai/dsh-api-remotes/client'
-import type { CommandResult } from '@deepseek-ai/dsh-commands/types'
+import type { CommandResult, CommandSubmitAttachment } from '@deepseek-ai/dsh-commands/types'
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
@@ -377,7 +377,19 @@ export class CommandUiRuntime extends Service implements CommandUiContract {
     line: string,
     attachments: readonly SubmitAttachment[] = [],
   ): Promise<SubmitOutcome> {
-    const result = await this.ctx.remote.commands.execute(session.sessionId, line, attachments)
+    // The command wire carries encoded images and staged file receipts only.
+    // Refuse a document with product copy: the composer keeps the draft and
+    // the attachment, never a silently dropped file.
+    if (attachments.some(attachment => attachment.type === 'document')) {
+      return {
+        kind: 'error',
+        text: this.t('notice.documentsUnsupported', { command: submittedCommandName(line) }),
+      }
+    }
+    const submittable = attachments.filter(
+      (attachment): attachment is CommandSubmitAttachment => attachment.type !== 'document',
+    )
+    const result = await this.ctx.remote.commands.execute(session.sessionId, line, submittable)
     if (!result.ok) throw new Error(`command.execute failed: ${result.error.code}: ${result.error.message}`)
     if (result.value === undefined) return { kind: 'error', text: `unknown or malformed command: ${line}` }
     this.notifyExecuted(session.sessionId, submittedCommandName(line), result.value.result)

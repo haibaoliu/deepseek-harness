@@ -27,7 +27,9 @@
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "workspace:^",
-    "sharp": "^0.35.3"
+    "fflate": "^0.8.2",
+    "sharp": "^0.35.3",
+    "unpdf": "^1.6.2"
   },
   "devDependencies": {
     "@deepseek-ai/dsh-attachment": "workspace:^",

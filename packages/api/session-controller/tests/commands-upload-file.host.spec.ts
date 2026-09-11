@@ -4,7 +4,8 @@ import { createInboxStub } from '@deepseek-ai/dsh-agent-loop-testkit'
 import type { Agent, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
 import AttachmentStore, { AttachmentId } from '@deepseek-ai/dsh-attachment'
 import type {
-  FileAttachmentRef, ImageAttachmentRef, SaveFileAttachment, SaveFileStreamAttachment,
+  FileAttachmentRef, ImageAttachmentRef, SaveDocumentAttachment, SaveFileAttachment,
+  SaveFileStreamAttachment, SavedDocumentAttachment,
 } from '@deepseek-ai/dsh-attachment'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
@@ -29,6 +30,8 @@ async function uploadHarness(origin?: 'subagent'): Promise<{
   saveFile: ReturnType<typeof vi.fn>
   saveFileStream: ReturnType<typeof vi.fn>
   saveImages: ReturnType<typeof vi.fn>
+  validateDocument: ReturnType<typeof vi.fn>
+  saveDocument: ReturnType<typeof vi.fn>
   disposeAgent: () => void
   uploadRoute: (request: Request) => Promise<Response>
 }> {
@@ -69,10 +72,30 @@ async function uploadHarness(origin?: 'subagent'): Promise<{
   })
   const saveImages = vi.fn((): Promise<readonly ImageAttachmentRef[]> =>
     Promise.reject(new Error('fixture did not expect image persistence')))
-  ctx.provide('attachments', Object.setPrototypeOf(
-    { saveFile, saveFileStream, saveImages },
-    AttachmentStore.prototype,
-  ) as never)
+  const validateDocument = vi.fn((_input: SaveDocumentAttachment): Promise<void> => Promise.resolve())
+  const saveDocument = vi.fn((input: SaveDocumentAttachment): Promise<SavedDocumentAttachment> =>
+    Promise.resolve({
+      ref: {
+        attachmentId: AttachmentId(`doc-${String(input.data[0] ?? 0)}`),
+        mediaType: input.mediaType,
+        bytes: input.data.byteLength,
+        ...input.name === undefined ? {} : { name: input.name },
+      },
+      text: new TextDecoder().decode(input.data),
+    }))
+  ctx.provide('attachments', Object.setPrototypeOf({
+    saveFile,
+    saveFileStream,
+    saveImages,
+    validateDocument,
+    saveDocument,
+    documentLimits: {
+      maxDocumentBytes: 4,
+      maxDocumentsPerMessage: 2,
+      maxMessageDocumentBytes: 4,
+      mediaTypes: ['text/markdown'],
+    },
+  }, AttachmentStore.prototype) as never)
   let uploadRoute: ((request: Request) => Promise<Response>) | undefined
   ctx.provide('connection', {
     fetch: {
@@ -106,6 +129,8 @@ async function uploadHarness(origin?: 'subagent'): Promise<{
     saveFile,
     saveFileStream,
     saveImages,
+    validateDocument,
+    saveDocument,
     disposeAgent,
     uploadRoute,
   }
@@ -468,5 +493,119 @@ describe('Session file uploads', () => {
         code: 'gateway/internal',
         message: 'failed to store file upload: Error: disk unavailable',
       })
+  })
+})
+
+describe('Session document attachments', () => {
+  it('admits each document as a model-visible text block followed by its durable reference', async () => {
+    const { controller, followup, validateDocument, saveDocument } = await uploadHarness()
+    await controller.prompt(promptRequest([
+      { type: 'text', text: 'review' },
+      { type: 'document', mediaType: 'text/markdown', data: 'YQ==', name: 'notes.md' },
+      { type: 'document', mediaType: 'text/markdown', data: 'ICAg' },
+    ]))
+
+    // Every document is validated before any member is persisted.
+    expect(validateDocument).toHaveBeenCalledTimes(2)
+    expect(saveDocument).toHaveBeenCalledTimes(2)
+    const firstSave = saveDocument.mock.invocationCallOrder[0] as number
+    for (const order of validateDocument.mock.invocationCallOrder) {
+      expect(order).toBeLessThan(firstSave)
+    }
+    const message = followup.mock.calls[0]?.[0] as UserMessage
+    expect(message.content).toEqual([
+      { type: 'text', text: 'review' },
+      { type: 'text', text: 'notes.md:\n\na' },
+      {
+        type: 'document',
+        attachment: { attachmentId: 'doc-97', mediaType: 'text/markdown', bytes: 1, name: 'notes.md' },
+      },
+      { type: 'text', text: 'document (no extractable text)' },
+      { type: 'document', attachment: { attachmentId: 'doc-32', mediaType: 'text/markdown', bytes: 3 } },
+    ])
+  })
+
+  it('rejects a document batch above the count limit before validating or persisting any member', async () => {
+    const { controller, followup, validateDocument, saveDocument } = await uploadHarness()
+    await expect(controller.prompt(promptRequest([
+      { type: 'document', mediaType: 'text/markdown', data: 'YQ==' },
+      { type: 'document', mediaType: 'text/markdown', data: 'Yg==' },
+      { type: 'document', mediaType: 'text/markdown', data: 'Yw==' },
+    ]))).rejects.toMatchObject({
+      code: 'session/attachment-invalid',
+      details: { reason: 'TOO_MANY_DOCUMENTS' },
+    })
+    expect(validateDocument).not.toHaveBeenCalled()
+    expect(saveDocument).not.toHaveBeenCalled()
+    expect(followup).not.toHaveBeenCalled()
+  })
+
+  it('rejects a document batch above the aggregate byte limit', async () => {
+    const { controller, followup, validateDocument, saveDocument } = await uploadHarness()
+    await expect(controller.prompt(promptRequest([
+      { type: 'document', mediaType: 'text/markdown', data: 'YWJj', name: 'a.md' },
+      { type: 'document', mediaType: 'text/markdown', data: 'ZGVm' },
+    ]))).rejects.toMatchObject({
+      code: 'session/attachment-invalid',
+      details: { reason: 'DOCUMENTS_TOO_LARGE' },
+    })
+    expect(validateDocument).not.toHaveBeenCalled()
+    expect(saveDocument).not.toHaveBeenCalled()
+    expect(followup).not.toHaveBeenCalled()
+  })
+
+  it('rejects a non-canonical base64 document payload', async () => {
+    const { controller, validateDocument, saveDocument } = await uploadHarness()
+    await expect(controller.prompt(promptRequest([
+      { type: 'document', mediaType: 'text/markdown', data: 'not base64!!' },
+    ]))).rejects.toMatchObject({
+      code: 'session/attachment-invalid',
+      details: { reason: 'INVALID_DOCUMENT' },
+    })
+    expect(validateDocument).not.toHaveBeenCalled()
+    expect(saveDocument).not.toHaveBeenCalled()
+  })
+
+  it('rejects an empty base64 document payload', async () => {
+    const { controller, validateDocument, saveDocument } = await uploadHarness()
+    await expect(controller.prompt(promptRequest([
+      { type: 'document', mediaType: 'text/markdown', data: '' },
+    ]))).rejects.toMatchObject({
+      code: 'session/attachment-invalid',
+      details: { reason: 'INVALID_DOCUMENT' },
+    })
+    expect(validateDocument).not.toHaveBeenCalled()
+    expect(saveDocument).not.toHaveBeenCalled()
+  })
+
+  it('preserves message order around images admitted beside documents', async () => {
+    const { controller, followup, saveImages, saveDocument } = await uploadHarness()
+    const image: ImageAttachmentRef = {
+      attachmentId: AttachmentId('admitted-image'), mediaType: 'image/png', bytes: 3, width: 1, height: 1,
+    }
+    saveImages.mockResolvedValueOnce([image])
+    await controller.prompt(promptRequest([
+      { type: 'document', mediaType: 'text/markdown', data: 'YQ==', name: 'a.md' },
+      { type: 'image', mediaType: 'image/png', data: 'AAAA' },
+      { type: 'document', mediaType: 'text/markdown', data: 'Yg==' },
+    ]))
+
+    const message = followup.mock.calls[0]?.[0] as UserMessage
+    expect(message.content).toEqual([
+      { type: 'text', text: 'a.md:\n\na' },
+      { type: 'document', attachment: { attachmentId: 'doc-97', mediaType: 'text/markdown', bytes: 1, name: 'a.md' } },
+      { type: 'image', attachment: image },
+      { type: 'text', text: 'document:\n\nb' },
+      { type: 'document', attachment: { attachmentId: 'doc-98', mediaType: 'text/markdown', bytes: 1 } },
+    ])
+    expect(saveDocument).toHaveBeenCalledTimes(2)
+  })
+
+  it('admits a text-only prompt without touching document storage', async () => {
+    const { controller, followup, validateDocument, saveDocument } = await uploadHarness()
+    await controller.prompt(promptRequest([{ type: 'text', text: 'plain' }]))
+    expect(validateDocument).not.toHaveBeenCalled()
+    expect(saveDocument).not.toHaveBeenCalled()
+    expect((followup.mock.calls[0]?.[0] as UserMessage).content).toEqual([{ type: 'text', text: 'plain' }])
   })
 })

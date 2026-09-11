@@ -2,7 +2,7 @@ import { Context } from '@deepseek-ai/cordis'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
 import type { Agent, Inbox, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
 import { AttachmentError, AttachmentId } from '@deepseek-ai/dsh-attachment'
-import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
+import type { DocumentAttachmentRef, ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import { createAssistantMessage, createUserMessage, MessageId } from '@deepseek-ai/dsh-llm'
 import SessionStore, {
   SESSION_FORMAT_VERSION, Session, SessionId, SessionLogOffset, SessionSeq,
@@ -294,6 +294,7 @@ function event(type: string, seq: SessionSeq, data: unknown): SessionEvent {
 async function persistedController(
   events: SessionEvent[],
   readImage: (ref: ImageAttachmentRef) => Promise<{ ref: ImageAttachmentRef; data: Uint8Array }>,
+  readDocument?: (ref: DocumentAttachmentRef) => Promise<{ ref: DocumentAttachmentRef; data: Uint8Array }>,
 ): Promise<{ ctx: Context; controller: SessionCommandController; sessionId: SessionId }> {
   const ctx = new Context()
   await ctx.plugin(SessionStore)
@@ -314,7 +315,10 @@ async function persistedController(
     }),
   }) as never)
   installSessionReadTestServices(ctx)
-  ctx.provide('attachments', { readImage } as never)
+  ctx.provide('attachments', {
+    readImage,
+    ...readDocument === undefined ? {} : { readDocument },
+  } as never)
   const agents = { resolveAgent: vi.fn() } as unknown as ApiSessionAgentController
   return { ctx, controller: new SessionCommandController(ctx, agents, '/workspace'), sessionId }
 }
@@ -448,6 +452,125 @@ describe('Session attachment authorization', () => {
     await expectFailure(controller.attachment({
       sessionId: SessionId('unreadable'), attachmentId: AttachmentId('att'),
     }), 'gateway/internal')
+    await ctx.fiber.dispose()
+  })
+})
+
+function documentRef(id: string): DocumentAttachmentRef {
+  return { attachmentId: AttachmentId(id), mediaType: 'text/markdown', bytes: 1 }
+}
+
+describe('Session document attachment authorization', () => {
+  it('finds document references in direct, message, inserted, nested, and streamed content', async () => {
+    const nested = documentRef('nested-doc')
+    const message = documentRef('message-doc')
+    const inserted = documentRef('inserted-doc')
+    const streamed = documentRef('streamed-doc')
+    const events: SessionEvent[] = [
+      { ...event('fixture/direct', SessionSeq(0), {
+        content: [null, [], { type: 'tool-result', content: [{ type: 'text', text: 'none' }] }, {
+          type: 'tool-result', content: [
+            { type: 'document' },
+            { type: 'document', attachment: null },
+            { type: 'document', attachment: 'not-a-reference' },
+            { type: 'document', attachment: { attachmentId: 'other-doc', mediaType: 'text/markdown', bytes: 1 } },
+            { type: 'document', attachment: nested },
+          ],
+        }],
+      }), ignorable: true as const },
+      {
+        type: 'assistant/message', seq: SessionSeq(1), time: 2, surfaceOp: 'append',
+        data: {
+          turn: 1,
+          step: 1,
+          stream: [],
+          message: createAssistantMessage({
+            content: [{ type: 'document', attachment: message }],
+            source: { provider: 'fixture', model: 'fixture' },
+          }),
+        },
+      },
+      event('agent/inbox/spliced', SessionSeq(2), {
+        target: 'next-turn',
+        start: 0,
+        inserted: [createUserMessage({
+          content: [{ type: 'document', attachment: inserted }],
+          source: { kind: 'user' },
+        })],
+      }),
+      event('assistant/attempt', SessionSeq(3), {
+        turn: 1,
+        step: 1,
+        stream: [{
+          type: 'chunk',
+          time: 4,
+          chunk: { type: 'block-end', index: 0, block: { type: 'document', attachment: streamed } },
+        }],
+      }),
+    ]
+    const readImage = vi.fn()
+    const readDocument = vi.fn((ref: DocumentAttachmentRef) => Promise.resolve({ ref, data: Uint8Array.of(2) }))
+    const { ctx, controller, sessionId } = await persistedController(events, readImage, readDocument)
+
+    for (const ref of [nested, message, inserted, streamed]) {
+      await expect(controller.attachment({ sessionId, attachmentId: ref.attachmentId }))
+        .resolves.toEqual({ attachment: ref, data: 'Ag==' })
+    }
+    expect(readDocument).toHaveBeenCalledTimes(4)
+    expect(readImage).not.toHaveBeenCalled()
+    await expectFailure(controller.attachment({
+      sessionId, attachmentId: AttachmentId('document-other'),
+    }), 'session/attachment-invalid')
+    await ctx.fiber.dispose()
+  })
+
+  it('maps missing and failing document backends', async () => {
+    for (const thrown of [
+      new AttachmentError('stored document is unavailable', 'ATTACHMENT_NOT_FOUND'),
+      new Error('backend offline'),
+    ]) {
+      const ref = documentRef(`doc-failure-${thrown.name}`)
+      const fixture = await persistedController(
+        [event('fixture/content', SessionSeq(0), { content: [{ type: 'document', attachment: ref }] })],
+        () => Promise.reject(new Error('unused')),
+        () => Promise.reject(thrown),
+      )
+      await expectFailure(fixture.controller.attachment({
+        sessionId: fixture.sessionId,
+        attachmentId: ref.attachmentId,
+      }), thrown instanceof AttachmentError ? 'session/attachment-invalid' : 'gateway/internal')
+      await fixture.ctx.fiber.dispose()
+    }
+  })
+
+  it('keeps a document id unresolvable while its durable reference is absent', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    installSessionReadTestServices(ctx)
+    const sessionId = SessionId('cold-document')
+    const meta: SessionHeader = {
+      version: SESSION_FORMAT_VERSION, id: sessionId, createdAt: 1, cwd: '/workspace', isSeeded: false,
+    }
+    ctx.provide('sessionPersistence', testSessionPersistence(ctx, {
+      list: () => Promise.resolve([meta]),
+      inspect: () => Promise.resolve({
+        meta,
+        inheritedEventCount: SessionLogOffset(0),
+        events: [event('fixture/content', SessionSeq(0), { content: [{ type: 'text', text: 'none' }] })],
+      }),
+    }) as never)
+    const readDocument = vi.fn(() => Promise.reject(new Error('unused')))
+    ctx.provide('attachments', { readImage: vi.fn(), readDocument } as never)
+    const controller = new SessionCommandController(
+      ctx,
+      { resolveAgent: vi.fn() } as unknown as ApiSessionAgentController,
+      '/workspace',
+    )
+
+    await expectFailure(controller.attachment({
+      sessionId, attachmentId: AttachmentId('unreferenced-document'),
+    }), 'session/attachment-invalid')
+    expect(readDocument).not.toHaveBeenCalled()
     await ctx.fiber.dispose()
   })
 })

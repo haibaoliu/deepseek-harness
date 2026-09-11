@@ -471,6 +471,11 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         parameters: [],
       },
       {
+        signature: 'abstract readonly documentLimits: DocumentAttachmentLimits',
+        description: 'Deployment-resolved document policy used by authoritative and fast-path validation.',
+        parameters: [],
+      },
+      {
         signature: 'abstract validateImage(input: SaveImageAttachment): Promise<void>',
         description: 'Validate one image without persisting it. Batch callers validate every member before saving any member.',
         parameters: [{ name: 'input', description: 'encoded bytes, declared media type, and optional display name.' }],
@@ -484,10 +489,10 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
       },
       {
         signature: 'async admitPromptContent( content: readonly AttachmentAdmissionPart[], ): Promise<AdmittedPromptContentPart[]>',
-        description: 'Admit one Host prompt and replace each uploaded image with its durable reference. Text and durable file references pass through unchanged. A prompt without image parts performs no storage operation.',
+        description: 'Admit one Host prompt and replace each uploaded image with its durable reference. Text and durable file references pass through unchanged. A prompt without image parts performs no storage operation. Browser document parts are refused here: the host document path admits them through the dedicated document seam, which also records the model-hidden reference this image-and-file result cannot carry.',
         parameters: [{ name: 'content', description: 'prompt parts in message order after file receipt resolution.' }],
         returns: 'admitted prompt parts in the same order as `content`.',
-        throws: ['AttachmentError when the image batch is refused.'],
+        throws: ['AttachmentError when the image batch is refused or a document part reaches this seam.'],
       },
       {
         signature: 'admitEncodedFile(input: EncodedFileAttachment): Promise<FileAttachmentRef>',
@@ -513,6 +518,25 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         description: 'Read one image and verify that bytes still match the recorded reference.',
         parameters: [{ name: 'ref', description: 'durable reference from the session log.' }, { name: 'signal', description: 'optional cancellation for backend read and verification work.' }],
         returns: 'the verified bytes and normalized attachment reference.',
+        throws: ['the signal reason when aborted, or a storage error when verification fails.'],
+      },
+      {
+        signature: 'abstract validateDocument(input: SaveDocumentAttachment): Promise<void>',
+        description: 'Validate one document without persisting it. Batch callers validate every member before saving any member.',
+        parameters: [{ name: 'input', description: 'encoded bytes, declared media type, and optional display name.' }],
+        returns: 'completion after the document bytes have been fully inspected and text extracted.',
+      },
+      {
+        signature: 'abstract saveDocument(input: SaveDocumentAttachment): Promise<SavedDocumentAttachment>',
+        description: 'Validate and durably commit one document before its owning session event is appended.',
+        parameters: [{ name: 'input', description: 'encoded bytes, declared media type, and optional display name.' }],
+        returns: 'a durable content-addressed reference plus the extracted model-visible text.',
+      },
+      {
+        signature: 'abstract readDocument(ref: DocumentAttachmentRef, signal?: AbortSignal): Promise<StoredDocumentAttachment>',
+        description: 'Read one document and verify that bytes still match the recorded reference.',
+        parameters: [{ name: 'ref', description: 'durable reference from the session log.' }, { name: 'signal', description: 'optional cancellation for backend read and verification work.' }],
+        returns: 'the verified bytes and canonical reference.',
         throws: ['the signal reason when aborted, or a storage error when verification fails.'],
       },
       {
@@ -1526,7 +1550,7 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
       },
       {
         signature: '@Remote(\'attachment\') attachment(request: SessionAttachmentRequest): Promise<SessionAttachmentValue>',
-        description: 'Read one image proven reachable from the addressed Session log.',
+        description: 'Read one image or document proven reachable from the addressed Session log.',
         parameters: [{ name: 'request', description: 'Session and attachment identities used for authorization.' }],
         returns: 'the durable attachment reference and base64-encoded bytes.',
       },
@@ -3916,7 +3940,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'ContentBlockMap',
-    declaration: 'export interface ContentBlockMap {\n    \'text\': TextBlock;\n    \'reasoning\': ReasoningBlock;\n    \'image\': ImageBlock;\n    \'file\': FileBlock;\n    \'tool-call\': ToolCallBlock;\n    \'tool-result\': ToolResultBlock;\n}',
+    declaration: 'export interface ContentBlockMap {\n    \'text\': TextBlock;\n    \'reasoning\': ReasoningBlock;\n    \'image\': ImageBlock;\n    \'file\': FileBlock;\n    \'document\': DocumentBlock;\n    \'tool-call\': ToolCallBlock;\n    \'tool-result\': ToolResultBlock;\n}',
   },
   {
     name: 'ContentBlockType',
@@ -4113,6 +4137,22 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'DirectoryRegistrationHandle',
     declaration: 'export interface DirectoryRegistrationHandle {\n    (): void;\n    replace(entries: readonly LlmConfigurableProvider[]): void;\n}',
+  },
+  {
+    name: 'DocumentAttachmentLimits',
+    declaration: 'export interface DocumentAttachmentLimits {\n    maxDocumentBytes: number;\n    maxDocumentsPerMessage: number;\n    maxMessageDocumentBytes: number;\n    mediaTypes: readonly DocumentMediaType[];\n}',
+  },
+  {
+    name: 'DocumentAttachmentRef',
+    declaration: 'export interface DocumentAttachmentRef {\n    attachmentId: AttachmentId;\n    mediaType: DocumentMediaType;\n    bytes: number;\n    name?: string;\n}',
+  },
+  {
+    name: 'DocumentBlock',
+    declaration: 'export interface DocumentBlock {\n    type: \'document\';\n    attachment: DocumentAttachmentRef;\n}',
+  },
+  {
+    name: 'DocumentMediaType',
+    declaration: 'export type DocumentMediaType = \'text/markdown\' | \'application/pdf\' | \'application/vnd.openxmlformats-officedocument.wordprocessingml.document\' | \'application/vnd.openxmlformats-officedocument.presentationml.presentation\';',
   },
   {
     name: 'Domain',
@@ -4979,6 +5019,14 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface SandboxPolicyRequest {\n    session?: Session;\n    mode?: SandboxMode;\n}',
   },
   {
+    name: 'SavedDocumentAttachment',
+    declaration: 'export interface SavedDocumentAttachment {\n    ref: DocumentAttachmentRef;\n    text: string;\n}',
+  },
+  {
+    name: 'SaveDocumentAttachment',
+    declaration: 'export interface SaveDocumentAttachment {\n    data: Uint8Array;\n    mediaType: DocumentMediaType;\n    name?: string;\n}',
+  },
+  {
     name: 'SaveFileAttachment',
     declaration: 'export interface SaveFileAttachment {\n    data: Uint8Array;\n    name?: string;\n}',
   },
@@ -5068,7 +5116,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'SessionAttachmentValue',
-    declaration: 'export interface SessionAttachmentValue {\n    readonly attachment: ImageAttachmentRef;\n    readonly data: string;\n}',
+    declaration: 'export interface SessionAttachmentValue {\n    readonly attachment: ImageAttachmentRef | DocumentAttachmentRef;\n    readonly data: string;\n}',
   },
   {
     name: 'SessionAvailability',
@@ -5701,6 +5749,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'StorageForms',
     declaration: 'export interface StorageForms {\n}',
+  },
+  {
+    name: 'StoredDocumentAttachment',
+    declaration: 'export interface StoredDocumentAttachment {\n    ref: DocumentAttachmentRef;\n    data: Uint8Array;\n}',
   },
   {
     name: 'StoredImageAttachment',

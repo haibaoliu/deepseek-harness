@@ -14,15 +14,15 @@ import { randomUUID } from '@deepseek-ai/dsh-util-crypto'
 // error, so scope resolution goes through the sessions service (scopeOf
 // method) instead of the standalone helper.
 import type {
-  ISessions, PendingSubmissionRetirement, SessionFace,
+  ISessions, PendingSubmissionAttachment, PendingSubmissionRetirement, SessionFace,
 } from '@deepseek-ai/dsh-api-session-controller/client'
 import type {} from '@deepseek-ai/dsh-client-file-upload/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
-import type { ImageMediaType } from '@deepseek-ai/dsh-attachment'
+import type { DocumentMediaType, ImageMediaType } from '@deepseek-ai/dsh-attachment'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type {
-  ComposerAttachment, ComposerFileAttachment, ComposerImageAttachment, DraftFileUpload,
+  ComposerAttachment, ComposerDocumentAttachment, ComposerFileAttachment, ComposerImageAttachment, DraftFileUpload,
 } from './contract/slots.ts'
 import type { QueueAction, QueueItemId } from './contract/queue.ts'
 import type { ComposerBlocks } from './contract/composer-blocks.ts'
@@ -79,6 +79,31 @@ function browserDraftAttachment(file: File): ComposerImageAttachment {
   }
 }
 
+/** Document media types accepted at intake; mirrors the Host's documentLimits. */
+const DOCUMENT_MEDIA_TYPES: readonly DocumentMediaType[] = [
+  'text/markdown',
+  'application/pdf',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+]
+
+/** Extension-only fallbacks for document types the browser reports without a MIME. */
+const DOCUMENT_EXTENSIONS: Readonly<Record<string, DocumentMediaType>> = {
+  '.md': 'text/markdown',
+  '.markdown': 'text/markdown',
+  '.pdf': 'application/pdf',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+}
+
+/** Resolve a browser file's document media type from its MIME, then its extension. */
+function documentMediaType(file: File): DocumentMediaType | undefined {
+  if ((DOCUMENT_MEDIA_TYPES as readonly string[]).includes(file.type)) return file.type as DocumentMediaType
+  const dot = file.name.lastIndexOf('.')
+  if (dot < 0) return undefined
+  return DOCUMENT_EXTENSIONS[file.name.slice(dot).toLowerCase()]
+}
+
 /**
  * Fill the draft's intrinsic dimensions once the browser parses the image
  * header (a metadata read off the preview URL, not a full decode). Failures
@@ -120,8 +145,8 @@ function nextPaint(): Promise<void> {
   })
 }
 
-/** Native canonical base64 of one browser image (FileReader data-URL encode; no main-thread byte loop). */
-function base64ImageOf(file: File): Promise<string> {
+/** Native canonical base64 of one browser file (FileReader data-URL encode; no main-thread byte loop). */
+function base64FileOf(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
     reader.onload = () => {
@@ -129,7 +154,7 @@ function base64ImageOf(file: File): Promise<string> {
       resolve(url.slice(url.indexOf(',') + 1))
     }
     reader.onerror = () => {
-      reject(reader.error ?? new Error('conversation: image read failed'))
+      reject(reader.error ?? new Error('conversation: file read failed'))
     }
     reader.readAsDataURL(file)
   })
@@ -244,21 +269,34 @@ export class ConversationController extends Service implements IConversation {
       }
       return upload
     }
-    const pendingAttachments = attachments.map(attachment => attachment.kind === 'image'
-      ? {
-        type: 'image' as const,
-        value: {
-          previewUrl: attachment.previewUrl,
-          ...(attachment.file.name === '' ? {} : { name: attachment.file.name }),
-          ...(attachment.width === undefined ? {} : { width: attachment.width }),
-          ...(attachment.height === undefined ? {} : { height: attachment.height }),
-        },
+    // Documents ride the durable prompt as inline base64 and are logged as
+    // document blocks, so the echo's image/file retirement list cannot carry
+    // them; the durable user message renders their chips instead.
+    const pendingAttachments = attachments.flatMap((attachment): PendingSubmissionAttachment[] => {
+      if (attachment.kind === 'image') {
+        return [{
+          type: 'image' as const,
+          value: {
+            previewUrl: attachment.previewUrl,
+            ...(attachment.file.name === '' ? {} : { name: attachment.file.name }),
+            ...(attachment.width === undefined ? {} : { width: attachment.width }),
+            ...(attachment.height === undefined ? {} : { height: attachment.height }),
+          },
+        }]
       }
-      : { type: 'file' as const, value: uploadFor(attachment).file })
+      if (attachment.kind === 'document') return []
+      return [{ type: 'file' as const, value: uploadFor(attachment).file }]
+    })
     const serializeAttachments = (): Promise<Parameters<SessionFace['prompt']>[0]> => Promise.all(
-      attachments.map(async attachment => attachment.kind === 'image'
-        ? { type: 'image' as const, ...await this.encodeImage(attachment.file) }
-        : { type: 'file' as const, receiptId: uploadFor(attachment).receiptId }),
+      attachments.map(async (attachment) => {
+        if (attachment.kind === 'image') {
+          return { type: 'image' as const, ...await this.encodeImage(attachment.file) }
+        }
+        if (attachment.kind === 'document') {
+          return { type: 'document' as const, ...await this.encodeDocument(attachment) }
+        }
+        return { type: 'file' as const, receiptId: uploadFor(attachment).receiptId }
+      }),
     )
     const snapshot = session.getSnapshot()
     if (snapshot.subagent !== null) {
@@ -298,9 +336,11 @@ export class ConversationController extends Service implements IConversation {
   /**
    * Create runtime-only draft attachments. Files whose browser MIME is an
    * accepted image type become image drafts (object URL preview, bytes sent
-   * with the prompt); every other file becomes a file draft whose background
-   * upload starts immediately and remains owned by this service across Session
-   * navigation until completion or explicit removal.
+   * with the prompt); accepted document types (MIME or extension) become
+   * document drafts whose bytes are inlined at send for Host text extraction;
+   * every other file becomes a file draft whose background upload starts
+   * immediately and remains owned by this service across Session navigation
+   * until completion or explicit removal.
    * @param sessionId - target Agent-scope identity.
    * @param files - browser files to register.
    * @returns ordered draft descriptors.
@@ -311,6 +351,17 @@ export class ConversationController extends Service implements IConversation {
         const attachment = browserDraftAttachment(file)
         this.draftAttachments.set(attachment.id, attachment)
         probeDimensions(attachment)
+        return attachment
+      }
+      const mediaType = documentMediaType(file)
+      if (mediaType !== undefined) {
+        const attachment: ComposerDocumentAttachment = {
+          kind: 'document',
+          id: randomUUID() as DraftAttachmentId,
+          file,
+          mediaType,
+        }
+        this.draftAttachments.set(attachment.id, attachment)
         return attachment
       }
       const attachment: ComposerFileAttachment = {
@@ -436,8 +487,9 @@ export class ConversationController extends Service implements IConversation {
 
   /**
    * Serialize ordered draft attachments to command-submit wire payloads without
-   * sending or releasing them. Images are encoded; generic files cite receipts
-   * from their completed background uploads and never reread browser bytes.
+   * sending or releasing them. Images and documents are inlined as base64;
+   * generic files cite receipts from their completed background uploads and
+   * never reread browser bytes.
    * @param attachmentIds - ordered draft-local attachment ids.
    * @returns wire payloads in id order.
    */
@@ -452,6 +504,9 @@ export class ConversationController extends Service implements IConversation {
     return {
       attachments: await Promise.all(attachments.map(async (attachment) => {
         if (attachment.kind === 'image') return { type: 'image' as const, ...await this.encodeImage(attachment.file) }
+        if (attachment.kind === 'document') {
+          return { type: 'document' as const, ...await this.encodeDocument(attachment) }
+        }
         const upload = uploads[attachment.id]
         if (upload === undefined || upload.status !== 'ready') {
           throw new Error('conversation.serializeDraftAttachments: one or more files have not finished uploading')
@@ -476,6 +531,8 @@ export class ConversationController extends Service implements IConversation {
       revokePreview(attachment.previewUrl)
       return
     }
+    // Documents own no upload state; only generic files carry one.
+    if (attachment.kind === 'document') return
     // The stored Host object stays durable; only the draft's upload state ends.
     this.fileUploads.set(Object.fromEntries(
       Object.entries(this.fileUploads.getSnapshot()).filter(([key]) => key !== id),
@@ -545,8 +602,9 @@ export class ConversationController extends Service implements IConversation {
    * each image leaves the registry, handing its preview URL to the durable
    * image cache (seeded under the admitted reference so the transcript node
    * renders immediately while the cache reads canonical bytes) or revoking it
-   * when the cache already holds that reference. Failed: nothing changes;
-   * the ids stay registered for the composer's rail restore.
+   * when the cache already holds that reference; each document simply leaves.
+   * Failed: nothing changes; the ids stay registered for the composer's rail
+   * restore.
    */
   private settleSubmittedAttachments(
     sessionId: SessionId,
@@ -558,13 +616,16 @@ export class ConversationController extends Service implements IConversation {
     let observedIndex = 0
     for (const attachment of attachments) {
       const live = this.draftAttachments.get(attachment.id)
-      const ref = retirement.attachments[observedIndex++]
+      // A document is logged as its own block and contributes no image/file
+      // reference to the retirement list, so it consumes no position there.
+      const ref = attachment.kind === 'document' ? undefined : retirement.attachments[observedIndex++]
       if (live === undefined) continue
       if (attachment.kind === 'file') {
         this.releaseDraftAttachment(attachment.id)
         continue
       }
       this.draftAttachments.delete(attachment.id)
+      if (attachment.kind === 'document') continue
       if (ref !== undefined && 'mediaType' in ref
         && uiConversation?.seedImageUrl(sessionId, ref, attachment.previewUrl) === true) continue
       revokePreview(attachment.previewUrl)
@@ -575,8 +636,19 @@ export class ConversationController extends Service implements IConversation {
   private async encodeImage(file: File): Promise<Omit<Extract<SubmitAttachment, { type: 'image' }>, 'type'>> {
     return {
       mediaType: imageMediaType(file.type),
-      data: await base64ImageOf(file),
+      data: await base64FileOf(file),
       ...(file.name === '' ? {} : { name: file.name }),
+    }
+  }
+
+  /** Canonical base64 wire form of one browser document file. */
+  private async encodeDocument(
+    attachment: ComposerDocumentAttachment,
+  ): Promise<Omit<Extract<SubmitAttachment, { type: 'document' }>, 'type'>> {
+    return {
+      mediaType: attachment.mediaType,
+      data: await base64FileOf(attachment.file),
+      ...(attachment.file.name === '' ? {} : { name: attachment.file.name }),
     }
   }
 }

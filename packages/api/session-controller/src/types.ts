@@ -1,7 +1,8 @@
 /** Browser-safe request, result, and lifecycle vocabulary for the Session Remote service. */
 
 import type {
-  AttachmentIdType, ImageAttachmentLimits, ImageAttachmentRef, ImageMediaType,
+  AttachmentIdType, DocumentAttachmentLimits, DocumentAttachmentRef, DocumentMediaType,
+  ImageAttachmentLimits, ImageAttachmentRef, ImageMediaType,
 } from '@deepseek-ai/dsh-attachment'
 import type { Branded } from '@deepseek-ai/dsh-brand'
 import type { LlmAttemptId, MessageId } from '@deepseek-ai/dsh-llm/brand'
@@ -18,6 +19,8 @@ declare module '@deepseek-ai/dsh-session-projection/types' {
     sessionListMetadata: SessionListMetadata
     /** Host state for the boot-constant image-limit view. */
     imageLimits: null
+    /** Host state for the boot-constant document-limit view. */
+    documentLimits: null
     /** Durable model selection already used by a request and still pending for a later request. */
     modelSelection: ModelSelectionProjectionState
   }
@@ -26,6 +29,8 @@ declare module '@deepseek-ai/dsh-session-projection/types' {
     sessionListMetadata: SessionListMetadata
     /** Image-intake limits enforced by the Session prompt endpoint. */
     imageLimits: ImageAttachmentLimits
+    /** Document-intake limits enforced by the Session prompt endpoint. */
+    documentLimits: DocumentAttachmentLimits
     /** Durable model selection already used and selected for the next request. */
     modelSelection: ModelSelectionProjection
   }
@@ -68,15 +73,21 @@ export type SessionProjectionValues = Partial<SessionProjectionMap>
   & Readonly<Record<string, SessionProjectionValue>>
 
 /**
- * Browser-submitted prompt content; the Host promotes image bytes to durable
- * references. File parts carry the opaque receipt returned by a preceding
- * `uploadFile` call on the same Session.
+ * Browser-submitted prompt content; the Host promotes image and document
+ * bytes to durable references. File parts carry the opaque receipt returned
+ * by a preceding `uploadFile` call on the same Session.
  */
 export type PromptContentPart =
   | { readonly type: 'text'; readonly text: string }
   | {
     readonly type: 'image'
     readonly mediaType: ImageMediaType
+    readonly data: string
+    readonly name?: string
+  }
+  | {
+    readonly type: 'document'
+    readonly mediaType: DocumentMediaType
     readonly data: string
     readonly name?: string
   }
@@ -324,15 +335,15 @@ export interface SessionPromptValue {
   readonly accepted: true
 }
 
-/** Durable image read request. */
+/** Durable attachment read request. */
 export interface SessionAttachmentRequest {
   readonly sessionId: SessionId
   readonly attachmentId: AttachmentIdType
 }
 
-/** Durable image read response value. */
+/** Durable attachment read response value; the reference discriminates image from document. */
 export interface SessionAttachmentValue {
-  readonly attachment: ImageAttachmentRef
+  readonly attachment: ImageAttachmentRef | DocumentAttachmentRef
   readonly data: string
 }
 

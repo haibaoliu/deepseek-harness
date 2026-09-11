@@ -3,11 +3,16 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { AttachmentId, AttachmentStore, ImageVariantId } from '@deepseek-ai/dsh-attachment'
 import type {
+  DocumentAttachmentLimits,
+  DocumentAttachmentRef,
   ImageAttachmentLimits,
   ImageAttachmentRef,
   ImageRequestPolicy,
   RequestImageAttachment,
+  SaveDocumentAttachment,
   SaveImageAttachment,
+  SavedDocumentAttachment,
+  StoredDocumentAttachment,
   StoredImageAttachment,
 } from '@deepseek-ai/dsh-attachment'
 import LlmRuntime, { createUserMessage, ToolCallId } from '@deepseek-ai/dsh-llm'
@@ -76,11 +81,26 @@ async function harness(image?: StoredImageAttachment): Promise<Context> {
         mediaTypes: [fixture.ref.mediaType],
       }
 
+      readonly documentLimits: DocumentAttachmentLimits = {
+        maxDocumentBytes: 1,
+        maxDocumentsPerMessage: 1,
+        maxMessageDocumentBytes: 1,
+        mediaTypes: [],
+      }
+
       validateImage(_input: SaveImageAttachment): Promise<void> {
         return Promise.reject(new Error('e2e attachment fixture is read-only'))
       }
 
+      validateDocument(_input: SaveDocumentAttachment): Promise<void> {
+        return Promise.reject(new Error('e2e attachment fixture is read-only'))
+      }
+
       saveImage(_input: SaveImageAttachment): Promise<ImageAttachmentRef> {
+        return Promise.reject(new Error('e2e attachment fixture is read-only'))
+      }
+
+      saveDocument(_input: SaveDocumentAttachment): Promise<SavedDocumentAttachment> {
         return Promise.reject(new Error('e2e attachment fixture is read-only'))
       }
 
@@ -89,6 +109,10 @@ async function harness(image?: StoredImageAttachment): Promise<Context> {
           return Promise.reject(new Error('unknown e2e attachment fixture'))
         }
         return Promise.resolve(fixture)
+      }
+
+      readDocument(_ref: DocumentAttachmentRef): Promise<StoredDocumentAttachment> {
+        return Promise.reject(new Error('e2e attachment fixture is read-only'))
       }
 
       override readImageRequest(ref: ImageAttachmentRef, _policy: ImageRequestPolicy): Promise<RequestImageAttachment> {

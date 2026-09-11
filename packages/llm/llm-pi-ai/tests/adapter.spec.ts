@@ -2,11 +2,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context, Service } from '@deepseek-ai/cordis'
 import { AttachmentId, AttachmentStore, ImageVariantId } from '@deepseek-ai/dsh-attachment'
 import type {
+  DocumentAttachmentLimits,
+  DocumentAttachmentRef,
   ImageAttachmentLimits,
   ImageAttachmentRef,
   ImageRequestPolicy,
   RequestImageAttachment,
+  SaveDocumentAttachment,
   SaveImageAttachment,
+  SavedDocumentAttachment,
+  StoredDocumentAttachment,
   StoredImageAttachment,
 } from '@deepseek-ai/dsh-attachment'
 import LlmRuntime, { createUserMessage, CONTEXT_WINDOW_EXCEEDED_CODE, LlmError, ReasoningEffortId, userAgent } from '@deepseek-ai/dsh-llm'
@@ -281,7 +286,18 @@ describe('PiAiAdapter provider routing', () => {
         mediaTypes: ['image/png'],
       }
 
+      readonly documentLimits: DocumentAttachmentLimits = {
+        maxDocumentBytes: 1,
+        maxDocumentsPerMessage: 1,
+        maxMessageDocumentBytes: 1,
+        mediaTypes: [],
+      }
+
       validateImage(_input: SaveImageAttachment): Promise<void> {
+        return Promise.reject(new Error('not used'))
+      }
+
+      validateDocument(_input: SaveDocumentAttachment): Promise<void> {
         return Promise.reject(new Error('not used'))
       }
 
@@ -289,8 +305,16 @@ describe('PiAiAdapter provider routing', () => {
         return Promise.reject(new Error('not used'))
       }
 
+      saveDocument(_input: SaveDocumentAttachment): Promise<SavedDocumentAttachment> {
+        return Promise.reject(new Error('not used'))
+      }
+
       readImage(value: ImageAttachmentRef): Promise<StoredImageAttachment> {
         return readImage(value)
+      }
+
+      readDocument(_ref: DocumentAttachmentRef): Promise<StoredDocumentAttachment> {
+        return Promise.reject(new Error('not used'))
       }
 
       override imageHostPath(_ref: ImageAttachmentRef): string {

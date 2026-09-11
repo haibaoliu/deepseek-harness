@@ -6,11 +6,16 @@ import { join } from 'node:path'
 import LlmRuntime, { createUserMessage, INVALID_CREDENTIAL_CODE } from '@deepseek-ai/dsh-llm'
 import AttachmentStore, { AttachmentId, ImageVariantId } from '@deepseek-ai/dsh-attachment'
 import type {
+  DocumentAttachmentLimits,
+  DocumentAttachmentRef,
   ImageAttachmentLimits,
   ImageAttachmentRef,
   ImageRequestPolicy,
   RequestImageAttachment,
+  SaveDocumentAttachment,
   SaveImageAttachment,
+  SavedDocumentAttachment,
+  StoredDocumentAttachment,
   StoredImageAttachment,
 } from '@deepseek-ai/dsh-attachment'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
@@ -51,8 +56,18 @@ class StaticAttachmentStore extends AttachmentStore {
     maxImageDimension: 4,
     mediaTypes: ['image/png'],
   }
+  readonly documentLimits: DocumentAttachmentLimits = {
+    maxDocumentBytes: 1,
+    maxDocumentsPerMessage: 1,
+    maxMessageDocumentBytes: 1,
+    mediaTypes: [],
+  }
 
   validateImage(_input: SaveImageAttachment): Promise<void> {
+    return Promise.resolve()
+  }
+
+  validateDocument(_input: SaveDocumentAttachment): Promise<void> {
     return Promise.resolve()
   }
 
@@ -60,8 +75,16 @@ class StaticAttachmentStore extends AttachmentStore {
     return Promise.resolve(IMAGE_REF)
   }
 
+  saveDocument(_input: SaveDocumentAttachment): Promise<SavedDocumentAttachment> {
+    throw new Error('unreachable in this test')
+  }
+
   readImage(ref: ImageAttachmentRef, _signal?: AbortSignal): Promise<StoredImageAttachment> {
     return Promise.resolve({ ref, data: Uint8Array.of(1, 2, 3) })
+  }
+
+  readDocument(_ref: DocumentAttachmentRef): Promise<StoredDocumentAttachment> {
+    throw new Error('unreachable in this test')
   }
 
   override imageHostPath(_ref: ImageAttachmentRef): string {

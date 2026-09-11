@@ -22,7 +22,7 @@ import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
 import * as FsPolicy from '@deepseek-ai/dsh-fs-observation-policy'
 import LocalAttachmentStore from '@deepseek-ai/dsh-attachment-local'
 import { AttachmentError, AttachmentId, AttachmentStore } from '@deepseek-ai/dsh-attachment'
-import type { ImageAttachmentLimits, ImageAttachmentRef, SaveImageAttachment, StoredImageAttachment } from '@deepseek-ai/dsh-attachment'
+import type { DocumentAttachmentLimits, DocumentAttachmentRef, ImageAttachmentLimits, ImageAttachmentRef, SaveDocumentAttachment, SaveImageAttachment, SavedDocumentAttachment, StoredDocumentAttachment, StoredImageAttachment } from '@deepseek-ai/dsh-attachment'
 import * as ToolFs from '@deepseek-ai/dsh-tool-fs'
 import {
   applyReadImageTool,
@@ -397,15 +397,34 @@ describe('extension-less paths', () => {
         mediaTypes: Object.freeze(['image/jpeg'] as const),
       })
 
+      readonly documentLimits: DocumentAttachmentLimits = Object.freeze({
+        maxDocumentBytes: 1,
+        maxDocumentsPerMessage: 1,
+        maxMessageDocumentBytes: 1,
+        mediaTypes: Object.freeze([] as const),
+      })
+
       validateImage(_input: SaveImageAttachment): Promise<void> {
         throw new Error('unreachable: the sniffed-format policy refuses before validation')
+      }
+
+      validateDocument(_input: SaveDocumentAttachment): Promise<void> {
+        throw new Error('unreachable in this test')
       }
 
       saveImage(_input: SaveImageAttachment): Promise<ImageAttachmentRef> {
         throw new Error('unreachable: the sniffed-format policy refuses before save')
       }
 
+      saveDocument(_input: SaveDocumentAttachment): Promise<SavedDocumentAttachment> {
+        throw new Error('unreachable in this test')
+      }
+
       readImage(_ref: ImageAttachmentRef): Promise<StoredImageAttachment> {
+        throw new Error('unreachable in this test')
+      }
+
+      readDocument(_ref: DocumentAttachmentRef): Promise<StoredDocumentAttachment> {
         throw new Error('unreachable in this test')
       }
     }
@@ -429,7 +448,18 @@ describe('extension-less paths', () => {
         mediaTypes: Object.freeze(['image/png'] as const),
       })
 
+      readonly documentLimits: DocumentAttachmentLimits = Object.freeze({
+        maxDocumentBytes: 1,
+        maxDocumentsPerMessage: 1,
+        maxMessageDocumentBytes: 1,
+        mediaTypes: Object.freeze([] as const),
+      })
+
       validateImage(_input: SaveImageAttachment): Promise<void> {
+        return Promise.resolve()
+      }
+
+      validateDocument(_input: SaveDocumentAttachment): Promise<void> {
         return Promise.resolve()
       }
 
@@ -437,7 +467,15 @@ describe('extension-less paths', () => {
         throw new AttachmentError('Declared image type does not match its bytes.', 'IMAGE_TYPE_MISMATCH')
       }
 
+      saveDocument(_input: SaveDocumentAttachment): Promise<SavedDocumentAttachment> {
+        throw new Error('unreachable in this test')
+      }
+
       readImage(_ref: ImageAttachmentRef): Promise<StoredImageAttachment> {
+        throw new Error('unreachable in this test')
+      }
+
+      readDocument(_ref: DocumentAttachmentRef): Promise<StoredDocumentAttachment> {
         throw new Error('unreachable in this test')
       }
     }
@@ -539,15 +577,34 @@ describe('argument and service preconditions', () => {
         mediaTypes: Object.freeze(['image/jpeg'] as const),
       })
 
+      readonly documentLimits: DocumentAttachmentLimits = Object.freeze({
+        maxDocumentBytes: 1,
+        maxDocumentsPerMessage: 1,
+        maxMessageDocumentBytes: 1,
+        mediaTypes: Object.freeze([] as const),
+      })
+
       validateImage(_input: SaveImageAttachment): Promise<void> {
         throw new Error('unreachable: admission refuses before validation')
+      }
+
+      validateDocument(_input: SaveDocumentAttachment): Promise<void> {
+        throw new Error('unreachable in this test')
       }
 
       saveImage(_input: SaveImageAttachment): Promise<ImageAttachmentRef> {
         throw new Error('unreachable: admission refuses before save')
       }
 
+      saveDocument(_input: SaveDocumentAttachment): Promise<SavedDocumentAttachment> {
+        throw new Error('unreachable in this test')
+      }
+
       readImage(_ref: ImageAttachmentRef): Promise<StoredImageAttachment> {
+        throw new Error('unreachable in this test')
+      }
+
+      readDocument(_ref: DocumentAttachmentRef): Promise<StoredDocumentAttachment> {
         throw new Error('unreachable in this test')
       }
     }
@@ -616,7 +673,18 @@ describe('image admission failures', () => {
         mediaTypes: Object.freeze(['image/png'] as const),
       })
 
+      readonly documentLimits: DocumentAttachmentLimits = Object.freeze({
+        maxDocumentBytes: 1,
+        maxDocumentsPerMessage: 1,
+        maxMessageDocumentBytes: 1,
+        mediaTypes: Object.freeze([] as const),
+      })
+
       validateImage(_input: SaveImageAttachment): Promise<void> {
+        return Promise.resolve()
+      }
+
+      validateDocument(_input: SaveDocumentAttachment): Promise<void> {
         return Promise.resolve()
       }
 
@@ -624,7 +692,15 @@ describe('image admission failures', () => {
         throw FailingStore.failure
       }
 
+      saveDocument(_input: SaveDocumentAttachment): Promise<SavedDocumentAttachment> {
+        throw new Error('unreachable in this test')
+      }
+
       readImage(_ref: ImageAttachmentRef): Promise<StoredImageAttachment> {
+        throw new Error('unreachable in this test')
+      }
+
+      readDocument(_ref: DocumentAttachmentRef): Promise<StoredDocumentAttachment> {
         throw new Error('unreachable in this test')
       }
     }
@@ -684,7 +760,18 @@ describe('image admission failures', () => {
         mediaTypes: Object.freeze(['image/png'] as const),
       })
 
+      readonly documentLimits: DocumentAttachmentLimits = Object.freeze({
+        maxDocumentBytes: 1,
+        maxDocumentsPerMessage: 1,
+        maxMessageDocumentBytes: 1,
+        mediaTypes: Object.freeze([] as const),
+      })
+
       validateImage(_input: SaveImageAttachment): Promise<void> {
+        return Promise.resolve()
+      }
+
+      validateDocument(_input: SaveDocumentAttachment): Promise<void> {
         return Promise.resolve()
       }
 
@@ -692,7 +779,15 @@ describe('image admission failures', () => {
         return { attachmentId: AttachmentId('sha256:feed'), mediaType: input.mediaType, bytes: input.data.length, width: 1, height: 1 }
       }
 
+      saveDocument(_input: SaveDocumentAttachment): Promise<SavedDocumentAttachment> {
+        throw new Error('unreachable in this test')
+      }
+
       readImage(_ref: ImageAttachmentRef): Promise<StoredImageAttachment> {
+        throw new Error('unreachable in this test')
+      }
+
+      readDocument(_ref: DocumentAttachmentRef): Promise<StoredDocumentAttachment> {
         throw new Error('unreachable in this test')
       }
     }
@@ -717,7 +812,18 @@ describe('image admission failures', () => {
         mediaTypes: Object.freeze(['image/png'] as const),
       })
 
+      readonly documentLimits: DocumentAttachmentLimits = Object.freeze({
+        maxDocumentBytes: 1,
+        maxDocumentsPerMessage: 1,
+        maxMessageDocumentBytes: 1,
+        mediaTypes: Object.freeze([] as const),
+      })
+
       validateImage(_input: SaveImageAttachment): Promise<void> {
+        return Promise.resolve()
+      }
+
+      validateDocument(_input: SaveDocumentAttachment): Promise<void> {
         return Promise.resolve()
       }
 
@@ -732,7 +838,15 @@ describe('image admission failures', () => {
         }
       }
 
+      saveDocument(_input: SaveDocumentAttachment): Promise<SavedDocumentAttachment> {
+        throw new Error('unreachable in this test')
+      }
+
       readImage(_ref: ImageAttachmentRef): Promise<StoredImageAttachment> {
+        throw new Error('unreachable in this test')
+      }
+
+      readDocument(_ref: DocumentAttachmentRef): Promise<StoredDocumentAttachment> {
         throw new Error('unreachable in this test')
       }
     }

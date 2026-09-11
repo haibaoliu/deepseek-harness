@@ -26,7 +26,7 @@ import { PwshLocalExecutor } from '@deepseek-ai/dsh-pwsh-local'
 import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
 import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
 import { AttachmentStore } from '@deepseek-ai/dsh-attachment'
-import type { ImageAttachmentLimits, ImageAttachmentRef, SaveImageAttachment, StoredImageAttachment } from '@deepseek-ai/dsh-attachment'
+import type { DocumentAttachmentLimits, DocumentAttachmentRef, ImageAttachmentLimits, ImageAttachmentRef, SaveDocumentAttachment, SaveImageAttachment, SavedDocumentAttachment, StoredDocumentAttachment, StoredImageAttachment } from '@deepseek-ai/dsh-attachment'
 import UserQuestionService from '@deepseek-ai/dsh-user-questions'
 import PlanModeController from '@deepseek-ai/dsh-plan-mode'
 import WebRuntime from '@deepseek-ai/dsh-web'
@@ -81,6 +81,13 @@ class CatalogAttachmentStore extends AttachmentStore {
     mediaTypes: Object.freeze(['image/png'] as const),
   })
 
+  readonly documentLimits: DocumentAttachmentLimits = Object.freeze({
+    maxDocumentBytes: 1,
+    maxDocumentsPerMessage: 1,
+    maxMessageDocumentBytes: 1,
+    mediaTypes: Object.freeze([] as const),
+  })
+
   override validateImage(_input: SaveImageAttachment): Promise<void> {
     return Promise.reject(new Error('gen-tool-catalog: attachment validation is unreachable during schema harvest'))
   }
@@ -91,6 +98,18 @@ class CatalogAttachmentStore extends AttachmentStore {
 
   override readImage(_ref: ImageAttachmentRef): Promise<StoredImageAttachment> {
     return Promise.reject(new Error('gen-tool-catalog: attachment reads are unreachable during schema harvest'))
+  }
+
+  override validateDocument(_input: SaveDocumentAttachment): Promise<void> {
+    return Promise.reject(new Error('gen-tool-catalog: document validation is unreachable during schema harvest'))
+  }
+
+  override saveDocument(_input: SaveDocumentAttachment): Promise<SavedDocumentAttachment> {
+    return Promise.reject(new Error('gen-tool-catalog: document writes are unreachable during schema harvest'))
+  }
+
+  override readDocument(_ref: DocumentAttachmentRef): Promise<StoredDocumentAttachment> {
+    return Promise.reject(new Error('gen-tool-catalog: document reads are unreachable during schema harvest'))
   }
 }
 

@@ -12,11 +12,16 @@ import type { Message, ToolSchema } from '@deepseek-ai/dsh-llm'
 import AttachmentStore, { AttachmentId, ImageVariantId } from '@deepseek-ai/dsh-attachment'
 import LocalAttachments from '@deepseek-ai/dsh-attachment-local'
 import type {
+  DocumentAttachmentLimits,
+  DocumentAttachmentRef,
   ImageAttachmentLimits,
   ImageAttachmentRef,
   ImageRequestPolicy,
   RequestImageAttachment,
+  SaveDocumentAttachment,
   SaveImageAttachment,
+  SavedDocumentAttachment,
+  StoredDocumentAttachment,
   StoredImageAttachment,
 } from '@deepseek-ai/dsh-attachment'
 import { LocalCredentialProvider } from '@deepseek-ai/dsh-credentials-local'
@@ -57,6 +62,12 @@ class E2eAttachmentStore extends AttachmentStore {
     maxImageDimension: 256,
     mediaTypes: ['image/png'],
   }
+  readonly documentLimits: DocumentAttachmentLimits = {
+    maxDocumentBytes: 1,
+    maxDocumentsPerMessage: 1,
+    maxMessageDocumentBytes: 1,
+    mediaTypes: [],
+  }
   readonly ref: ImageAttachmentRef = {
     attachmentId: AttachmentId(`sha256:${randomBytes(32).toString('hex')}`),
     mediaType: 'image/png',
@@ -82,12 +93,24 @@ class E2eAttachmentStore extends AttachmentStore {
     return Promise.resolve()
   }
 
+  validateDocument(_input: SaveDocumentAttachment): Promise<void> {
+    return Promise.resolve()
+  }
+
   saveImage(_input: SaveImageAttachment): Promise<ImageAttachmentRef> {
     return Promise.resolve(this.ref)
   }
 
+  saveDocument(_input: SaveDocumentAttachment): Promise<SavedDocumentAttachment> {
+    throw new Error('unreachable in this test')
+  }
+
   readImage(ref: ImageAttachmentRef, _signal?: AbortSignal): Promise<StoredImageAttachment> {
     return Promise.resolve({ ref, data: TEST_PNG })
+  }
+
+  readDocument(_ref: DocumentAttachmentRef): Promise<StoredDocumentAttachment> {
+    throw new Error('unreachable in this test')
   }
 
   override readImageRequest(

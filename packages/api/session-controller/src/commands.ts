@@ -1,19 +1,20 @@
 /** Session commands whose activation policy is explicit at each Remote method. */
 
 import { randomUUID } from 'node:crypto'
+import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { brandString } from '@deepseek-ai/dsh-brand'
 import type { Agent, ModelSelection as AgentModelSelection } from '@deepseek-ai/dsh-agent'
 import { AttachmentError } from '@deepseek-ai/dsh-attachment'
 import type {
-  AttachmentAdmissionPart, FileAttachmentRef, ImageAttachmentRef,
+  AttachmentAdmissionPart, DocumentAttachmentRef, FileAttachmentRef, ImageAttachmentRef,
 } from '@deepseek-ai/dsh-attachment'
 import type { FileUploadReceiptId } from '@deepseek-ai/dsh-client-file-upload/types'
 import type {} from '@deepseek-ai/dsh-client-file-upload'
 import {
   ReasoningEffortId, assistantStreamChunks, createUserMessage, freezeMessage,
 } from '@deepseek-ai/dsh-llm'
-import type { MessageSource } from '@deepseek-ai/dsh-llm'
+import type { ContentBlock, MessageSource } from '@deepseek-ai/dsh-llm'
 import { SessionLogOffset, SessionSeq } from '@deepseek-ai/dsh-session'
 import type { SessionEvent, SessionHeader, SessionId, UserMessage } from '@deepseek-ai/dsh-session'
 import { SessionQueryError, type SessionObservation } from '@deepseek-ai/dsh-session-query'
@@ -72,11 +73,14 @@ export class SessionCommandController {
    * @param ctx - Host context carrying Agent, model, attachment, title, and Workspace services.
    * @param agents - sole owner of create, resume, and Session-local model selection.
    * @param defaultCwd - project directory used when create names neither a Workspace nor a cwd.
+   * @param temporarySessionRoot - root for one fresh scratch directory per workspace-less
+   *   Session; absent keeps {@link defaultCwd}.
    */
   constructor(
     private readonly ctx: Context,
     private readonly agents: ApiSessionAgentController,
     private readonly defaultCwd: string,
+    private readonly temporarySessionRoot?: string,
   ) {}
 
   /**
@@ -98,7 +102,11 @@ export class SessionCommandController {
         })
       }
     }
-    const cwd = workspace?.path ?? request.cwd ?? this.defaultCwd
+    const cwd = workspace?.path
+      ?? request.cwd
+      ?? (this.temporarySessionRoot === undefined
+        ? this.defaultCwd
+        : join(this.temporarySessionRoot, randomUUID()))
     let adopted: Agent
     try {
       adopted = await this.agents.ensureSession(
@@ -333,6 +341,7 @@ export class SessionCommandController {
       ...(clientTimeZone === undefined ? {} : { clientTimeZone }),
     }
     const hasImage = request.content.some(part => part.type === 'image')
+    const hasDocument = request.content.some(part => part.type === 'document')
     const admit = async (): Promise<SessionPromptValue> => {
       try {
         if (hasImage) {
@@ -350,7 +359,7 @@ export class SessionCommandController {
           request.content,
           receiptId => this.ctx.fileUploads.resolve(agent, receiptId),
         )
-        const content = await this.ctx.attachments.admitPromptContent(admission.content)
+        const content = await admitPromptContent(this.ctx, admission.content)
         const message: UserMessage = createUserMessage({ content, source })
         if (this.ctx.agents.get(agent.id) !== agent) {
           throw new RemoteError(
@@ -372,11 +381,11 @@ export class SessionCommandController {
       }
       return { accepted: true }
     }
-    return hasImage ? this.agents.serializeImageAdmission(agent, admit) : admit()
+    return hasImage || hasDocument ? this.agents.serializeImageAdmission(agent, admit) : admit()
   }
 
   /**
-   * Read one durable image after proving the Session log references it.
+   * Read one durable image or document after proving the Session log references it.
    * @param request - Session and attachment identities used for authorization.
    * @returns the durable attachment reference and base64-encoded bytes.
    */
@@ -394,26 +403,41 @@ export class SessionCommandController {
         {},
       )
     }
-    const ref = referencedImage(source.events, String(request.attachmentId))
-    if (ref === undefined) {
-      throw new RemoteError(
-        'session/attachment-invalid',
-        'Image is not referenced by this session.',
-        { reason: 'ATTACHMENT_NOT_REFERENCED' },
-      )
-    }
-    try {
-      const stored = await this.ctx.attachments.readImage(ref)
-      return {
-        attachment: stored.ref,
-        data: Buffer.from(stored.data).toString('base64'),
+    const image = referencedImage(source.events, String(request.attachmentId))
+    if (image !== undefined) {
+      try {
+        const stored = await this.ctx.attachments.readImage(image)
+        return {
+          attachment: stored.ref,
+          data: Buffer.from(stored.data).toString('base64'),
+        }
+      } catch (error) {
+        if (error instanceof AttachmentError) {
+          throw new RemoteError('session/attachment-invalid', error.message, { reason: error.code })
+        }
+        throw new RemoteError('gateway/internal', 'Unable to read image attachment.', {})
       }
-    } catch (error) {
-      if (error instanceof AttachmentError) {
-        throw new RemoteError('session/attachment-invalid', error.message, { reason: error.code })
-      }
-      throw new RemoteError('gateway/internal', 'Unable to read image attachment.', {})
     }
+    const document = referencedDocument(source.events, String(request.attachmentId))
+    if (document !== undefined) {
+      try {
+        const stored = await this.ctx.attachments.readDocument(document)
+        return {
+          attachment: stored.ref,
+          data: Buffer.from(stored.data).toString('base64'),
+        }
+      } catch (error) {
+        if (error instanceof AttachmentError) {
+          throw new RemoteError('session/attachment-invalid', error.message, { reason: error.code })
+        }
+        throw new RemoteError('gateway/internal', 'Unable to read document attachment.', {})
+      }
+    }
+    throw new RemoteError(
+      'session/attachment-invalid',
+      'Attachment is not referenced by this session.',
+      { reason: 'ATTACHMENT_NOT_REFERENCED' },
+    )
   }
 
   /**
@@ -582,6 +606,84 @@ function resolvePromptFileReceipts(
   return { content: resolved, receiptIds: [...receiptIds] }
 }
 
+/** One browser document part awaiting durable admission. */
+type PromptDocumentPart = Extract<AttachmentAdmissionPart, { readonly type: 'document' }>
+
+/** Decode one browser document payload while rejecting non-canonical base64 forms. */
+function decodeDocumentBase64(data: string): Uint8Array {
+  const decoded = Buffer.from(data, 'base64')
+  if (data.length === 0 || decoded.toString('base64') !== data) {
+    throw new AttachmentError('Document upload is not canonical base64.', 'INVALID_DOCUMENT')
+  }
+  return new Uint8Array(decoded)
+}
+
+/** Render one extracted document as model-visible text, headed by its display name. */
+function documentText(name: string | undefined, text: string): string {
+  const label = name ?? 'document'
+  const body = text.trim()
+  return body === '' ? `${label} (no extractable text)` : `${label}:\n\n${body}`
+}
+
+/**
+ * Admit one prompt's attachment parts after file receipt resolution. Document
+ * members are counted and byte-totaled against the deployment document limits
+ * and each one is validated before any is saved; every saved document becomes
+ * a model-visible text block followed by its model-hidden durable reference.
+ * Image and file parts delegate to the attachment service's own admission seam.
+ * @param ctx - Host context carrying the attachment service.
+ * @param content - prompt parts in message order after file receipt resolution.
+ * @returns admitted model content in the same order as `content`.
+ * @throws AttachmentError when a document batch, an image batch, or storage is refused.
+ */
+async function admitPromptContent(
+  ctx: Context,
+  content: readonly AttachmentAdmissionPart[],
+): Promise<ContentBlock[]> {
+  const documents = content.filter(
+    (part): part is PromptDocumentPart => part.type === 'document',
+  )
+  if (documents.length === 0) return ctx.attachments.admitPromptContent(content)
+  const { maxDocumentsPerMessage, maxMessageDocumentBytes } = ctx.attachments.documentLimits
+  if (documents.length > maxDocumentsPerMessage) {
+    throw new AttachmentError('Prompt exceeds the configured document-count limit.', 'TOO_MANY_DOCUMENTS')
+  }
+  const decoded = new Map<PromptDocumentPart, Uint8Array>(
+    documents.map(part => [part, decodeDocumentBase64(part.data)] as const),
+  )
+  const dataFor = (part: PromptDocumentPart): Uint8Array => decoded.get(part) as Uint8Array
+  const totalBytes = documents.reduce((sum, part) => sum + dataFor(part).byteLength, 0)
+  if (totalBytes > maxMessageDocumentBytes) {
+    throw new AttachmentError('Prompt exceeds the configured aggregate document-byte limit.', 'DOCUMENTS_TOO_LARGE')
+  }
+  for (const part of documents) {
+    await ctx.attachments.validateDocument({
+      data: dataFor(part),
+      mediaType: part.mediaType,
+      ...part.name === undefined ? {} : { name: part.name },
+    })
+  }
+  const admitted = await ctx.attachments.admitPromptContent(
+    content.filter(part => part.type !== 'document'),
+  )
+  const blocks: ContentBlock[] = []
+  let next = 0
+  for (const part of content) {
+    if (part.type === 'document') {
+      const saved = await ctx.attachments.saveDocument({
+        data: dataFor(part),
+        mediaType: part.mediaType,
+        ...part.name === undefined ? {} : { name: part.name },
+      })
+      blocks.push({ type: 'text', text: documentText(saved.ref.name, saved.text) })
+      blocks.push({ type: 'document', attachment: saved.ref })
+      continue
+    }
+    blocks.push(admitted[next++] as ContentBlock)
+  }
+  return blocks
+}
+
 function hasPromptRequest(agent: Agent, requestId: SessionRequestId): boolean {
   const matches = (message: UserMessage): boolean => {
     const source = message.source
@@ -647,6 +749,63 @@ function referencedImage(
 ): ImageAttachmentRef | undefined {
   for (const event of events) {
     const found = imageInEvent(event, ref => String(ref.attachmentId) === attachmentId)
+    if (found !== undefined) return found
+  }
+  return undefined
+}
+
+function documentBlockIn(
+  content: unknown,
+  match: (ref: DocumentAttachmentRef) => boolean,
+): DocumentAttachmentRef | undefined {
+  if (!Array.isArray(content)) return undefined
+  for (const value of content) {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) continue
+    const block = value as { readonly type?: unknown; readonly attachment?: unknown; readonly content?: unknown }
+    if (block.type === 'document' && typeof block.attachment === 'object' && block.attachment !== null) {
+      const ref = block.attachment as DocumentAttachmentRef
+      if (match(ref)) return ref
+    }
+    if (block.type === 'tool-result') {
+      const nested = documentBlockIn(block.content, match)
+      if (nested !== undefined) return nested
+    }
+  }
+  return undefined
+}
+
+function documentInEvent(
+  event: SessionEvent,
+  match: (ref: DocumentAttachmentRef) => boolean,
+): DocumentAttachmentRef | undefined {
+  const data = event.data as {
+    readonly content?: unknown
+    readonly message?: { readonly content?: unknown }
+    readonly inserted?: readonly { readonly content?: unknown }[]
+  }
+  const direct = documentBlockIn(data.content, match)
+  if (direct !== undefined) return direct
+  const message = documentBlockIn(data.message?.content, match)
+  if (message !== undefined) return message
+  for (const inserted of data.inserted ?? []) {
+    const found = documentBlockIn(inserted.content, match)
+    if (found !== undefined) return found
+  }
+  if (event.type === 'assistant/message' || event.type === 'assistant/attempt') {
+    for (const chunk of assistantStreamChunks(event.data.stream, 'block-end')) {
+      const found = documentBlockIn([chunk.block], match)
+      if (found !== undefined) return found
+    }
+  }
+  return undefined
+}
+
+function referencedDocument(
+  events: readonly SessionEvent[],
+  attachmentId: string,
+): DocumentAttachmentRef | undefined {
+  for (const event of events) {
+    const found = documentInEvent(event, ref => String(ref.attachmentId) === attachmentId)
     if (found !== undefined) return found
   }
   return undefined

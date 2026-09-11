@@ -15,8 +15,17 @@ const IMAGE_ADMISSION_ERROR_CODES = [
 /** Caller-correctable attachment failure codes raised while admitting image input. */
 export type ImageAdmissionErrorCode = typeof IMAGE_ADMISSION_ERROR_CODES[number]
 
+const DOCUMENT_ADMISSION_ERROR_CODES = [
+  'TOO_MANY_DOCUMENTS',
+  'DOCUMENTS_TOO_LARGE',
+  'INVALID_DOCUMENT',
+  'DOCUMENT_TYPE_MISMATCH',
+  'DOCUMENT_TOO_LARGE',
+] as const
+
 const ATTACHMENT_ERROR_CODES = [
   ...IMAGE_ADMISSION_ERROR_CODES,
+  ...DOCUMENT_ADMISSION_ERROR_CODES,
   'INVALID_FILE_BASE64',
   'INVALID_ATTACHMENT_REF',
   'ATTACHMENT_CORRUPT',

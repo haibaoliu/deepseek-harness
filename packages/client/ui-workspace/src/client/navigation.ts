@@ -40,7 +40,7 @@ export interface UiWorkspace {
   connectWorkspace(workspaceId: WorkspaceId): Promise<SessionId>
   /**
    * Start a New Session flow and navigate to its Session.
-   * @param workspaceId - explicit target; absent inherits the current or most recent Workspace.
+   * @param workspaceId - explicit target; absent opens a workspace-less temporary Session.
    */
   startSession(workspaceId?: WorkspaceId): void
   /**
@@ -151,24 +151,43 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     if (!navigation.aborted) this.openSession(childId)
   }
 
+  /**
+   * The shared New Session action behind the shell entry points. A
+   * workspace-scoped call (the workspace browser's row action) connects that
+   * Workspace's blank Session. The un-scoped sidebar button opens a
+   * workspace-less temporary Session instead, reusing an existing blank
+   * ungrouped Session so repeated clicks do not accumulate empty rows.
+   * Failures are non-fatal (console diagnostics; the current view stays
+   * usable).
+   * @param workspaceId - explicit target Workspace for scoped actions.
+   */
   startSession(workspaceId?: WorkspaceId): void {
-    const workspace = this.workspaces.list.getSnapshot()
-    const sessions = this.sessions.list.getSnapshot()
-    const current = sessions.current
-    const currentWorkspaceId = current === undefined
-      ? undefined
-      : workspace.items.find(item => item.sessionIds.includes(current))?.workspaceId
-    const recent = workspace.phase === 'ready' && sessions.phase === 'ready'
-      ? recentWorkspace(workspace.items, sessions.byId)
-      : undefined
-    const target = workspaceId ?? currentWorkspaceId ?? recent
-    if (target === undefined) {
-      this.sessions.clear()
-      this.ctx.layout.selectPanel(null)
+    if (workspaceId !== undefined) {
+      void this.openWorkspace(workspaceId).catch(
+        (reason: unknown) => { console.warn('new session failed:', reason) },
+      )
       return
     }
-    void this.openWorkspace(target).catch(
-      (reason: unknown) => { console.warn('new session failed:', reason) },
+    const workspace = this.workspaces.list.getSnapshot()
+    const sessions = this.sessions.list.getSnapshot()
+    // Ungrouped = owned by no Workspace. A subagent Session never counts: it is
+    // an addressed child, not a chat the sidebar button starts.
+    const grouped = new Set(workspace.items.flatMap(item => item.sessionIds))
+    const existingBlank = sessions.ids.find((id) => {
+      const summary = sessions.byId[id]
+      return summary !== undefined
+        && summary.blank
+        && summary.origin !== 'subagent'
+        && !grouped.has(id)
+        && !workspace.archivedSessionIds.includes(id)
+    })
+    if (existingBlank !== undefined) {
+      this.openSession(existingBlank)
+      return
+    }
+    void this.sessions.create({}).then(
+      (sessionId) => { this.openSession(sessionId) },
+      (reason: unknown) => { console.warn('new temporary session failed:', reason) },
     )
   }
 

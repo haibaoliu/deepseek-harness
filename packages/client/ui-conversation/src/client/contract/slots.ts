@@ -1,6 +1,6 @@
 /** Target-neutral Conversation slot declarations and composed component props. */
 import type { ReactNode, RefObject } from 'react'
-import type { FileAttachmentRef, ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
+import type { DocumentMediaType, FileAttachmentRef, ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import type { SessionSnapshot } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { FileUploadReceiptId } from '@deepseek-ai/dsh-client-file-upload/client'
 import type { WorkspaceSnapshot } from '@deepseek-ai/dsh-api-workspace-controller/client'
@@ -24,7 +24,7 @@ import type { ConversationSnapshot } from './snapshot.ts'
 import type { ViewTab } from './views.ts'
 
 /** Browser-owned draft attachment that has not crossed the durable Host boundary. */
-export type ComposerAttachment = ComposerImageAttachment | ComposerFileAttachment
+export type ComposerAttachment = ComposerImageAttachment | ComposerFileAttachment | ComposerDocumentAttachment
 
 /** Browser-owned image, base64-encoded into the prompt at send time. */
 export interface ComposerImageAttachment {
@@ -43,6 +43,19 @@ export interface ComposerFileAttachment {
   kind: 'file'
   id: DraftAttachmentId
   file: File
+}
+
+/**
+ * Browser-owned document, base64-encoded into the prompt at send time. The
+ * Host extracts its model-visible text, because a PDF/DOCX/PPTX cannot reach a
+ * model as bytes; the accepted media type is resolved at intake and never
+ * re-derived. No background upload runs for this kind.
+ */
+export interface ComposerDocumentAttachment {
+  kind: 'document'
+  id: DraftAttachmentId
+  file: File
+  mediaType: DocumentMediaType
 }
 
 /** Upload lifecycle of one picked file draft (files upload on pick, not on send). */

@@ -379,45 +379,61 @@ describe('UiWorkspaceService', () => {
       .rejects.toThrow('uiWorkspace.connectWorkspace: unknown workspace ghost')
   })
 
-  it('targets an explicit, current-session, then recent Workspace and reports failed starts', async () => {
+  it('targets scoped New Session at the explicit Workspace and un-scoped New Session at a temporary session', async () => {
     const current = summary('current', { cwd: '/w/current-home', updatedAt: 1 })
-    const recent = summary('recent', { cwd: '/w/recent-home', updatedAt: 2 })
     const b = bench({
-      sessions: sessionState([current, recent], current.id),
-      workspaces: workspaceState([
-        workspace('current-home', [current.id]),
-        workspace('recent-home', [recent.id]),
-      ]),
+      sessions: sessionState([current], current.id),
+      workspaces: workspaceState([workspace('recent-home')]),
     })
-    b.sessions.create.mockImplementation(async options => sid(`opened-${String(options?.workspaceId)}`))
+    b.sessions.create.mockImplementation(async options => options?.workspaceId === undefined
+      ? sid('temp')
+      : sid(`opened-${String(options.workspaceId)}`))
 
+    // Workspace-scoped: connects the named Workspace.
     b.uiWorkspace.startSession(wid('recent-home'))
     await vi.waitFor(() => {
       expect(b.sessions.open).toHaveBeenLastCalledWith(sid('opened-recent-home'))
     })
 
-    b.sessions.open(current.id)
+    // Un-scoped: creates a workspace-less temporary session (no workspaceId).
     b.uiWorkspace.startSession()
     await vi.waitFor(() => {
-      expect(b.sessions.open).toHaveBeenLastCalledWith(sid('opened-current-home'))
+      expect(b.sessions.create).toHaveBeenLastCalledWith({})
+      expect(b.sessions.open).toHaveBeenLastCalledWith(sid('temp'))
     })
-
-    b.sessions.clear()
-    b.uiWorkspace.startSession()
-    await vi.waitFor(() => {
-      expect(b.sessions.open).toHaveBeenLastCalledWith(sid('opened-recent-home'))
-    })
-
-    const empty = bench()
-    empty.uiWorkspace.startSession()
-    expect(empty.sessions.clear).toHaveBeenCalledOnce()
 
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     b.sessions.create.mockRejectedValueOnce(new Error('create failed'))
+    b.uiWorkspace.startSession()
+    await vi.waitFor(() => {
+      expect(warning).toHaveBeenCalledWith('new temporary session failed:', expect.any(Error))
+    })
+    b.sessions.create.mockRejectedValueOnce(new Error('connect failed'))
     b.uiWorkspace.startSession(wid('recent-home'))
     await vi.waitFor(() => {
       expect(warning).toHaveBeenCalledWith('new session failed:', expect.any(Error))
     })
+  })
+
+  it('reuses a blank ungrouped session for un-scoped New Session instead of minting another', () => {
+    const b = bench({
+      sessions: {
+        // A listed id the summaries no longer carry is skipped, never reused.
+        ...sessionState([
+          summary('member'),
+          summary('stray', { blank: true, updatedAt: 2 }),
+          // An addressed subagent child and an archived row are never reused.
+          summary('child', { blank: true, origin: 'subagent', updatedAt: 3 }),
+          summary('archived', { blank: true, updatedAt: 4 }),
+        ], sid('member')),
+        ids: [sid('missing'), sid('member'), sid('child'), sid('archived'), sid('stray')],
+      },
+      workspaces: workspaceState([workspace('alpha', [sid('member')])], [sid('archived')]),
+    })
+
+    b.uiWorkspace.startSession()
+    expect(b.sessions.open).toHaveBeenCalledExactlyOnceWith(sid('stray'))
+    expect(b.sessions.create).not.toHaveBeenCalled()
   })
 
   it('opens the recent Workspace after both baselines arrive', async () => {

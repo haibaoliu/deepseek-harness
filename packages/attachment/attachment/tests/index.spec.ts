@@ -6,12 +6,17 @@ import AttachmentStore, {
   ImageVariantId,
   isAttachmentError,
   isImageAdmissionError,
+  type DocumentAttachmentLimits,
+  type DocumentAttachmentRef,
   type ImageAttachmentRef,
   type ImageMediaType,
   type ImageRequestPolicy,
   type RequestImageAttachment,
+  type SaveDocumentAttachment,
   type SaveFileAttachment,
   type SaveImageAttachment,
+  type SavedDocumentAttachment,
+  type StoredDocumentAttachment,
   type StoredImageAttachment,
 } from '../src/index.ts'
 
@@ -24,8 +29,16 @@ const LIMITS = {
   mediaTypes: ['image/png'] as const,
 }
 
+const DOCUMENT_LIMITS: DocumentAttachmentLimits = {
+  maxDocumentBytes: 1,
+  maxDocumentsPerMessage: 1,
+  maxMessageDocumentBytes: 1,
+  mediaTypes: [],
+}
+
 class RecordingStore extends AttachmentStore {
   readonly imageLimits = LIMITS
+  readonly documentLimits = DOCUMENT_LIMITS
   readonly calls: string[] = []
   rejectValidationAt: number | undefined
   rejectSaveAt: number | undefined
@@ -54,6 +67,18 @@ class RecordingStore extends AttachmentStore {
     throw new Error('not used')
   }
 
+  validateDocument(_input: SaveDocumentAttachment): Promise<void> {
+    throw new Error('not used')
+  }
+
+  saveDocument(_input: SaveDocumentAttachment): Promise<SavedDocumentAttachment> {
+    throw new Error('not used')
+  }
+
+  readDocument(_ref: DocumentAttachmentRef): Promise<StoredDocumentAttachment> {
+    throw new Error('not used')
+  }
+
   override readImageRequest(
     ref: ImageAttachmentRef,
     _policy: ImageRequestPolicy,
@@ -76,6 +101,7 @@ class RecordingStore extends AttachmentStore {
 
 class UnsupportedProjectionStore extends AttachmentStore {
   readonly imageLimits = LIMITS
+  readonly documentLimits = DOCUMENT_LIMITS
 
   validateImage(): Promise<void> {
     return Promise.resolve()
@@ -86,6 +112,18 @@ class UnsupportedProjectionStore extends AttachmentStore {
   }
 
   readImage(): Promise<StoredImageAttachment> {
+    throw new Error('not used')
+  }
+
+  validateDocument(): Promise<void> {
+    return Promise.resolve()
+  }
+
+  saveDocument(): Promise<SavedDocumentAttachment> {
+    throw new Error('not used')
+  }
+
+  readDocument(): Promise<StoredDocumentAttachment> {
     throw new Error('not used')
   }
 }

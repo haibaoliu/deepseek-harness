@@ -6,14 +6,18 @@ import { dirname, join, parse, resolve } from 'node:path'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import sharp from 'sharp'
-import type { ImageAttachmentLimits } from '@deepseek-ai/dsh-attachment'
+import type { DocumentAttachmentLimits, ImageAttachmentLimits } from '@deepseek-ai/dsh-attachment'
 import type { NormalizationPolicy } from '../src/normalization.ts'
 import {
   commitPreparedImageFile,
   prepareImageFile,
   publishImmutableObject,
+  readDocumentFile,
   readImageFile,
+  saveDocumentFile,
   saveImageFile,
+  storedDocumentPath,
+  validateDocumentFile,
 } from '../src/store.ts'
 
 const fsControl = vi.hoisted(() => ({
@@ -55,6 +59,15 @@ const LIMITS: ImageAttachmentLimits = {
   maxImageDimension: 2000,
   mediaTypes: ['image/png', 'image/jpeg', 'image/webp', 'image/gif'],
 }
+
+const DOCUMENT_LIMITS: DocumentAttachmentLimits = {
+  maxDocumentBytes: 1024,
+  maxDocumentsPerMessage: 2,
+  maxMessageDocumentBytes: 2048,
+  mediaTypes: ['text/markdown', 'application/pdf'],
+}
+
+const MARKDOWN = new TextEncoder().encode('# Title\n\nBody text')
 
 const roots: string[] = []
 
@@ -295,5 +308,57 @@ describe('local attachment store', () => {
       ...prepared,
       data: Uint8Array.of(...prepared.data, 0),
     })).rejects.toMatchObject({ code: 'ATTACHMENT_CORRUPT' })
+  })
+
+  it('publishes document bytes content-addressed and returns their extracted text', async () => {
+    const storageRoot = await root()
+    const sha256 = createHash('sha256').update(MARKDOWN).digest('hex')
+    const object = join(storageRoot, 'objects', sha256.slice(0, 2), sha256)
+
+    const saved = await saveDocumentFile(storageRoot, {
+      data: MARKDOWN, mediaType: 'text/markdown', name: '/private/tmp/notes.md',
+    }, DOCUMENT_LIMITS)
+
+    expect(saved.ref).toEqual({
+      attachmentId: `sha256:${sha256}`,
+      mediaType: 'text/markdown',
+      bytes: MARKDOWN.byteLength,
+      name: 'notes.md',
+    })
+    expect(saved.text).toBe('# Title\n\nBody text')
+    expect(storedDocumentPath(storageRoot, saved.ref)).toBe(object)
+    expect(new Uint8Array(await readFile(object))).toEqual(MARKDOWN)
+    await expect(readDocumentFile(storageRoot, saved.ref)).resolves.toEqual({ ref: saved.ref, data: MARKDOWN })
+  })
+
+  it('validates documents without persisting and fails closed on refused or changed objects', async () => {
+    const storageRoot = await root()
+    await expect(validateDocumentFile({ data: MARKDOWN, mediaType: 'text/markdown' }, DOCUMENT_LIMITS))
+      .resolves.toBeUndefined()
+    await expect(readdir(storageRoot)).rejects.toMatchObject({ code: 'ENOENT' })
+
+    await expect(saveDocumentFile(storageRoot, {
+      data: MARKDOWN, mediaType: 'text/markdown',
+    }, { ...DOCUMENT_LIMITS, maxDocumentBytes: 1 })).rejects.toMatchObject({ code: 'DOCUMENT_TOO_LARGE' })
+    await expect(saveDocumentFile(storageRoot, {
+      data: MARKDOWN, mediaType: 'application/pdf',
+    }, DOCUMENT_LIMITS)).rejects.toMatchObject({ code: 'DOCUMENT_TYPE_MISMATCH' })
+
+    const saved = await saveDocumentFile(storageRoot, { data: MARKDOWN, mediaType: 'text/markdown' }, DOCUMENT_LIMITS)
+    await expect(readDocumentFile(storageRoot, { ...saved.ref, bytes: saved.ref.bytes + 1 }))
+      .rejects.toMatchObject({ code: 'ATTACHMENT_CORRUPT' })
+    await expect(readDocumentFile(storageRoot, { ...saved.ref, attachmentId: 'bad' as never }))
+      .rejects.toMatchObject({ code: 'INVALID_ATTACHMENT_REF' })
+
+    const sha256 = String(saved.ref.attachmentId).slice('sha256:'.length)
+    const object = join(storageRoot, 'objects', sha256.slice(0, 2), sha256)
+    await chmod(object, 0o600)
+    await writeFile(object, Uint8Array.of(1, 2, 3))
+    await expect(readDocumentFile(storageRoot, saved.ref))
+      .rejects.toMatchObject({ code: 'ATTACHMENT_CORRUPT' })
+
+    const missingRoot = await root()
+    await expect(readDocumentFile(missingRoot, saved.ref))
+      .rejects.toMatchObject({ code: 'ATTACHMENT_NOT_FOUND' })
   })
 })

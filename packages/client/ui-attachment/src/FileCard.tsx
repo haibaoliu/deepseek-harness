@@ -28,7 +28,8 @@ export function FileCard({
   progress?: number
   labels: FileCardLabels
   onRemove: () => void
-  onRetry: () => void
+  /** Retry affordance owner: absent for a card whose bytes cannot be re-sent (a document draft). */
+  onRetry?: (() => void) | undefined
 }) {
   const extension = fileExtension(name).toUpperCase().slice(0, 8)
   const meta = state === 'uploading'
@@ -47,7 +48,7 @@ export function FileCard({
           ? <span className={css.spinner} />
           : <FileTypeIcon path={name} />}
       </span>
-      {retryable
+      {retryable && onRetry !== undefined
         ? (
           <button type="button" className={`${css.body} ${css.retry}`} aria-label={labels.retry} onClick={onRetry}>
             <span className={css.name}>{name}</span>

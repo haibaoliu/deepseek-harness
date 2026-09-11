@@ -37,6 +37,7 @@
     { "path": "../../fs/fs" },
     { "path": "../../llm/llm" },
     { "path": "../../util/deque" },
+    { "path": "../../util/home-paths" },
     { "path": "../../util/native-command" },
     { "path": "../../preset/agent-presets" },
     { "path": "../../session/session-persistence" },

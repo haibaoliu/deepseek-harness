@@ -19,7 +19,7 @@ import {
   type Stream,
 } from '@agentclientprotocol/sdk'
 import AttachmentStore, { AttachmentError, AttachmentId } from '@deepseek-ai/dsh-attachment'
-import type { ImageAttachmentLimits, ImageAttachmentRef, SaveImageAttachment, StoredImageAttachment } from '@deepseek-ai/dsh-attachment'
+import type { DocumentAttachmentLimits, DocumentAttachmentRef, ImageAttachmentLimits, ImageAttachmentRef, SaveDocumentAttachment, SaveImageAttachment, SavedDocumentAttachment, StoredDocumentAttachment, StoredImageAttachment } from '@deepseek-ai/dsh-attachment'
 import { type GenerateOptions, LlmAdapter, ReasoningEffortId, type LlmResolvedModelInfo, type StreamChunk } from '@deepseek-ai/dsh-llm'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
@@ -146,6 +146,25 @@ class MemoryAttachmentStore extends AttachmentStore {
     const stored = this.objects.get(ref.attachmentId)
     if (stored === undefined) throw new AttachmentError('Attachment object is missing.', 'ATTACHMENT_NOT_FOUND')
     return { ref: stored.ref, data: Uint8Array.from(stored.data) }
+  }
+
+  readonly documentLimits: DocumentAttachmentLimits = {
+    maxDocumentBytes: 1,
+    maxDocumentsPerMessage: 1,
+    maxMessageDocumentBytes: 1,
+    mediaTypes: [],
+  }
+
+  validateDocument(_input: SaveDocumentAttachment): Promise<void> {
+    return Promise.reject(new Error('MemoryAttachmentStore does not support documents'))
+  }
+
+  saveDocument(_input: SaveDocumentAttachment): Promise<SavedDocumentAttachment> {
+    return Promise.reject(new Error('MemoryAttachmentStore does not support documents'))
+  }
+
+  readDocument(_ref: DocumentAttachmentRef): Promise<StoredDocumentAttachment> {
+    return Promise.reject(new Error('MemoryAttachmentStore does not support documents'))
   }
 }
 

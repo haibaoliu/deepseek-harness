@@ -7,6 +7,7 @@
  * here is the submit plane (phase, claim, attempt) alone.
  */
 import type { Context } from '@deepseek-ai/cordis'
+import type { DocumentMediaType } from '@deepseek-ai/dsh-attachment'
 import type { ObservableSnapshot, SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { Branded } from '@deepseek-ai/dsh-brand'
 import type { LexicalEditor } from 'lexical'
@@ -20,11 +21,22 @@ export interface TokenSpan {
   readonly draftRev: number
 }
 
-/** Attachment payload passed to a claimed command submission. */
+/**
+ * Attachment payload passed to a claimed command submission. Documents are
+ * carried here because the composer serializes one draft set for both sinks,
+ * but the command wire accepts encoded images and staged file receipts only:
+ * a command claim refuses a document before dispatch.
+ */
 export type SubmitAttachment =
   | {
     readonly type: 'image'
     readonly mediaType: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif'
+    readonly data: string
+    readonly name?: string
+  }
+  | {
+    readonly type: 'document'
+    readonly mediaType: DocumentMediaType
     readonly data: string
     readonly name?: string
   }
