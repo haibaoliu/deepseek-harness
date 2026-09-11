@@ -14,7 +14,7 @@ Status: implemented
 
 已存在的会话永远不会被 Workspace 选择器卡住：只有"没有会话"的状态保持 inert。对无工作区会话而言，被抬起的 composer block 仍然禁用输入，但模型座位保持可用，因此可以从输入框清除该 block。
 
-宿主新增一个可选的 `temporarySessionRoot` 部署设置，默认值为 `dshHomePath('tmp-sessions')`。一个既未指定 Workspace 也未指定 `cwd` 的会话创建请求会拿到 `join(temporarySessionRoot, randomUUID())`，而不是共享默认目录，因此每个临时会话拥有一个不会有其它会话写入的新目录。当该设置缺席时——即显式传入 `undefined`，隔离性单元测试就是这样做的——创建会保留旧的共享回退，而不会写进真实的 `$DSH_HOME`。
+宿主新增一个可选的 `temporarySessionRoot` 控制器内部选项，由服务默认取 `dshHomePath('tmp-sessions')`，目前只能通过该内部注入点传入（没有配置面）。一个既未指定 Workspace 也未指定 `cwd` 的会话创建请求会拿到 `join(temporarySessionRoot, <会话 id 的哈希>)`，而不是共享默认目录，因此每个临时会话拥有一个不会有其它会话写入的目录。该叶子名由会话身份派生而非每次新生成，因为对已存在的会话重复调用 `session.create({ sessionId })` 必须能收养它：若每次重新生成叶子名，持久化 `cwd` 校验就会失败并暴露为冲突。当该选项缺席时——即显式传入 `undefined`，隔离性单元测试就是这样做的——创建会保留旧的共享回退，而不会写进真实的 `$DSH_HOME`。
 
 ## Alternatives considered
 

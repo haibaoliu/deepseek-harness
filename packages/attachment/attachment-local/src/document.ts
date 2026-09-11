@@ -72,16 +72,34 @@ const OOXML_TEXT_ENTRY = /^(?:word\/document\.xml|ppt\/presentation\.xml|ppt\/sl
 const MAX_UNCOMPRESSED_DOCUMENT_BYTES = 64 * 1024 * 1024
 
 /**
+ * Ceiling on the central-directory entries one container may declare. The
+ * uncompressed-size bound cannot cover a crafted archive: fflate walks the
+ * entry count it reads from the archive (a caller-controlled 32-bit field on
+ * the zip64 path) and consults this filter once per declared entry, so an
+ * unbounded count spins the single host thread for minutes without ever
+ * reaching a size check. Refusing past this many inspected entries keeps that
+ * walk bounded.
+ */
+const MAX_CONTAINER_ENTRIES = 4096
+
+/**
  * Unzip the text-bearing entries of a document container, normalizing invalid
  * archives to an attachment error. Entries outside {@link OOXML_TEXT_ENTRY}
- * are never decompressed, and a container whose selected entries declare more
- * than {@link MAX_UNCOMPRESSED_DOCUMENT_BYTES} is refused.
+ * are never decompressed, a container that declares more than
+ * {@link MAX_CONTAINER_ENTRIES} entries is refused, and a container whose
+ * selected entries declare more than
+ * {@link MAX_UNCOMPRESSED_DOCUMENT_BYTES} is refused.
  */
 function unzip(data: Uint8Array): Record<string, Uint8Array> {
   let total = 0
+  let inspected = 0
   try {
     return unzipSync(data, {
       filter: (file) => {
+        inspected += 1
+        if (inspected > MAX_CONTAINER_ENTRIES) {
+          throw new AttachmentError('Document declares too many container entries.', 'INVALID_DOCUMENT')
+        }
         if (!OOXML_TEXT_ENTRY.test(file.name)) return false
         total += file.originalSize
         if (total > MAX_UNCOMPRESSED_DOCUMENT_BYTES) {

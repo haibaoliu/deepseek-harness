@@ -404,6 +404,50 @@ describe('QueueDock', () => {
     expect(group?.children[1]?.tagName).toBe('IMG')
   })
 
+  it('renders durable document blocks as chips in original order instead of dropping them', async () => {
+    const loadImage = vi.fn(() => Promise.resolve('blob:document-order'))
+    const mixed: QueuedMessage = {
+      id: iid('i-documents'), messageId: 'message-i-documents' as never, placement: 'queued',
+      content: [
+        {
+          type: 'document',
+          attachment: {
+            attachmentId: 'doc-named' as never,
+            mediaType: 'application/pdf', bytes: 12, name: 'spec.pdf',
+          },
+        },
+        {
+          type: 'document',
+          attachment: {
+            attachmentId: 'doc-unnamed' as never,
+            mediaType: 'text/markdown', bytes: 7,
+          },
+        },
+        {
+          type: 'image',
+          attachment: {
+            attachmentId: 'image-after-doc' as never,
+            mediaType: 'image/png', bytes: 1, width: 1, height: 1,
+          },
+        },
+      ],
+      preview: '', text: null,
+    }
+    const snap = snapshotWith([mixed])
+    const source = liveSession(snap)
+    const view = render(<QueueDock {...kitFor(snap, { loadImage })} useSession={source.useSession} />)
+    await waitFor(() => { expect(view.container.querySelector('img')).not.toBeNull() })
+    const group = view.getByLabelText('排队文档 spec.pdf').parentElement
+    expect(group?.children).toHaveLength(3)
+    expect(group?.children[0]?.getAttribute('aria-label')).toBe('排队文档 spec.pdf')
+    expect(group?.children[0]?.textContent).toContain('spec.pdf')
+    expect(group?.children[0]?.textContent).toContain('12B')
+    // An unnamed durable document keeps the localized label and its byte size.
+    expect(group?.children[1]?.getAttribute('aria-label')).toBe('排队文档 文档')
+    expect(group?.children[1]?.textContent).toContain('7B')
+    expect(group?.children[2]?.tagName).toBe('IMG')
+  })
+
   it('keeps the empty thumbnail placeholder when the image read fails', async () => {
     const loadImage = vi.fn(() => Promise.reject(new Error('read denied')))
     const snap = snapshotWith([imageRow('i-broken', 'att-x')])

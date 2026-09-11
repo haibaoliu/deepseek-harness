@@ -11,6 +11,7 @@ import {
 import type {
   DocumentAttachmentLimits,
   DocumentAttachmentRef,
+  DocumentMediaType,
   ImageAttachmentLimits,
   ImageAttachmentRef,
   SaveDocumentAttachment,
@@ -109,6 +110,18 @@ export async function validateImageFile(
 }
 
 /**
+ * Refuse a declared document media type the deployment does not accept.
+ * Mirrors the image batch policy, which enforces its own `mediaTypes` list.
+ * @param mediaType - caller-declared document media type.
+ * @param limits - resolved source admission policy.
+ */
+function assertAcceptedDocumentType(mediaType: DocumentMediaType, limits: DocumentAttachmentLimits): void {
+  if (!limits.mediaTypes.includes(mediaType)) {
+    throw new AttachmentError('Document media type is not accepted by this deployment.', 'UNSUPPORTED_DOCUMENT_TYPE')
+  }
+}
+
+/**
  * Run the full admission policy for one document without touching storage:
  * byte limit, declared media type against container bytes, and a complete text
  * extraction, so a stored document cannot fail its model-visible projection later.
@@ -120,6 +133,7 @@ export async function validateDocumentFile(
   input: SaveDocumentAttachment,
   limits: DocumentAttachmentLimits,
 ): Promise<void> {
+  assertAcceptedDocumentType(input.mediaType, limits)
   if (input.data.byteLength > limits.maxDocumentBytes) {
     throw new AttachmentError('Document exceeds the configured byte limit.', 'DOCUMENT_TOO_LARGE')
   }
@@ -537,6 +551,7 @@ export async function saveDocumentFile(
   input: SaveDocumentAttachment,
   limits: DocumentAttachmentLimits,
 ): Promise<SavedDocumentAttachment> {
+  assertAcceptedDocumentType(input.mediaType, limits)
   if (input.data.byteLength > limits.maxDocumentBytes) {
     throw new AttachmentError('Document exceeds the configured byte limit.', 'DOCUMENT_TOO_LARGE')
   }

@@ -18,9 +18,10 @@ import type {
 } from '@deepseek-ai/dsh-api-session-controller/client'
 import type {} from '@deepseek-ai/dsh-client-file-upload/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
-import type { DocumentMediaType, ImageMediaType } from '@deepseek-ai/dsh-attachment'
+import type { ImageMediaType } from '@deepseek-ai/dsh-attachment'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-store'
+import { documentMediaType } from './document-media.ts'
 import type {
   ComposerAttachment, ComposerDocumentAttachment, ComposerFileAttachment, ComposerImageAttachment, DraftFileUpload,
 } from './contract/slots.ts'
@@ -77,31 +78,6 @@ function browserDraftAttachment(file: File): ComposerImageAttachment {
     previewUrl: URL.createObjectURL(file),
     file,
   }
-}
-
-/** Document media types accepted at intake; mirrors the Host's documentLimits. */
-const DOCUMENT_MEDIA_TYPES: readonly DocumentMediaType[] = [
-  'text/markdown',
-  'application/pdf',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-]
-
-/** Extension-only fallbacks for document types the browser reports without a MIME. */
-const DOCUMENT_EXTENSIONS: Readonly<Record<string, DocumentMediaType>> = {
-  '.md': 'text/markdown',
-  '.markdown': 'text/markdown',
-  '.pdf': 'application/pdf',
-  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-}
-
-/** Resolve a browser file's document media type from its MIME, then its extension. */
-function documentMediaType(file: File): DocumentMediaType | undefined {
-  if ((DOCUMENT_MEDIA_TYPES as readonly string[]).includes(file.type)) return file.type as DocumentMediaType
-  const dot = file.name.lastIndexOf('.')
-  if (dot < 0) return undefined
-  return DOCUMENT_EXTENSIONS[file.name.slice(dot).toLowerCase()]
 }
 
 /**

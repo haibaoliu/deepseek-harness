@@ -436,6 +436,40 @@ describe('UiWorkspaceService', () => {
     expect(b.sessions.create).not.toHaveBeenCalled()
   })
 
+  it('coalesces rapid un-scoped New Session clicks into one temporary creation', async () => {
+    const b = bench()
+    const creation = Promise.withResolvers<SessionId>()
+    b.sessions.create.mockReturnValue(creation.promise)
+
+    b.uiWorkspace.startSession()
+    b.uiWorkspace.startSession()
+    expect(b.sessions.create).toHaveBeenCalledOnce()
+    expect(b.sessions.create).toHaveBeenCalledWith({})
+
+    creation.resolve(sid('temp-once'))
+    await vi.waitFor(() => { expect(b.sessions.open).toHaveBeenCalledWith(sid('temp-once')) })
+    expect(b.sessions.open).toHaveBeenCalledOnce()
+  })
+
+  it('does not reuse an ungrouped-looking blank before the Workspace list is ready', async () => {
+    const b = bench({
+      sessions: sessionState([summary('stray', { blank: true })], sid('stray')),
+      // The Workspace list is still pending, so `stray` may yet prove a member.
+      workspaces: workspaceState([], [], 'pending'),
+    })
+    b.sessions.create.mockResolvedValue(sid('temp-after-ready'))
+
+    b.uiWorkspace.startSession()
+    await vi.waitFor(() => { expect(b.sessions.open).toHaveBeenCalledWith(sid('temp-after-ready')) })
+    expect(b.sessions.create).toHaveBeenCalledWith({})
+
+    // Once the list is ready and proves the row ungrouped, the same call reuses it.
+    b.workspaces.list.set(workspaceState([workspace('alpha')]))
+    b.uiWorkspace.startSession()
+    expect(b.sessions.open).toHaveBeenLastCalledWith(sid('stray'))
+    expect(b.sessions.create).toHaveBeenCalledOnce()
+  })
+
   it('opens the recent Workspace after both baselines arrive', async () => {
     const b = bench()
     b.sessions.create.mockResolvedValue(sid('initial'))

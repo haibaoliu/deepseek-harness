@@ -17,6 +17,13 @@ describe('attachment rejection copy', () => {
     mediaTypes: ['image/png'] as const,
   }
 
+  const documentLimits = {
+    maxDocumentBytes: 25 * 1024 * 1024,
+    maxDocumentsPerMessage: 10,
+    maxMessageDocumentBytes: 100 * 1024 * 1024,
+    mediaTypes: ['application/pdf'] as const,
+  }
+
   it('renders megabytes without a trailing fraction unless one exists', () => {
     expect(imageSizeText(10 * 1024 * 1024)).toBe('10MB')
     expect(imageSizeText(2.5 * 1024 * 1024)).toBe('2.5MB')
@@ -34,11 +41,25 @@ describe('attachment rejection copy', () => {
     expect(attachmentErrorText(enT, 'TOO_MANY_IMAGES', limits)).toBe('A message can include up to 20 images')
   })
 
+  it('maps document reasons to document copy with the projected document limits', () => {
+    // Format-family reasons read as a document problem, never as an image one.
+    for (const reason of ['INVALID_DOCUMENT', 'DOCUMENT_TYPE_MISMATCH', 'UNSUPPORTED_DOCUMENT_TYPE']) {
+      expect(attachmentErrorText(t, reason)).toBe('仅支持 Markdown、PDF、DOCX、PPTX 格式的文档')
+    }
+    expect(attachmentErrorText(t, 'TOO_MANY_DOCUMENTS', undefined, documentLimits)).toBe('一条消息最多添加 10 个文档')
+    expect(attachmentErrorText(t, 'DOCUMENT_TOO_LARGE', undefined, documentLimits)).toBe('单个文档不能超过 25MB')
+    expect(attachmentErrorText(t, 'DOCUMENTS_TOO_LARGE', undefined, documentLimits)).toBe('文档总大小超过 100MB，请移除部分文档')
+    expect(attachmentErrorText(enT, 'UNSUPPORTED_DOCUMENT_TYPE')).toBe('Only Markdown, PDF, DOCX, and PPTX documents are supported')
+  })
+
   it('folds unknown reasons and limit reasons without projected limits into the send-failed line', () => {
     expect(attachmentErrorText(t, 'INVALID_IMAGE_BASE64')).toBe('图片发送失败（INVALID_IMAGE_BASE64），请重新添加图片后再试')
     expect(attachmentErrorText(t, 'TOO_MANY_IMAGES')).toBe('图片发送失败（TOO_MANY_IMAGES），请重新添加图片后再试')
     expect(attachmentErrorText(t, 'IMAGE_TOO_LARGE')).toBe('图片发送失败（IMAGE_TOO_LARGE），请重新添加图片后再试')
     expect(attachmentErrorText(t, 'IMAGES_TOO_LARGE')).toBe('图片发送失败（IMAGES_TOO_LARGE），请重新添加图片后再试')
     expect(attachmentErrorText(t, 'IMAGE_DIMENSION_TOO_LARGE')).toBe('图片发送失败（IMAGE_DIMENSION_TOO_LARGE），请重新添加图片后再试')
+    expect(attachmentErrorText(t, 'TOO_MANY_DOCUMENTS')).toBe('图片发送失败（TOO_MANY_DOCUMENTS），请重新添加图片后再试')
+    expect(attachmentErrorText(t, 'DOCUMENT_TOO_LARGE')).toBe('图片发送失败（DOCUMENT_TOO_LARGE），请重新添加图片后再试')
+    expect(attachmentErrorText(t, 'DOCUMENTS_TOO_LARGE')).toBe('图片发送失败（DOCUMENTS_TOO_LARGE），请重新添加图片后再试')
   })
 })

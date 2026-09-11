@@ -24,11 +24,13 @@ import {
 import type {} from '@deepseek-ai/dsh-plan-mode/client'
 // Type-only: the `goal` projection key merge (hint disambiguation).
 import type {} from '@deepseek-ai/dsh-goal/client'
-// The `imageLimits` projection key merge (intake pre-check) arrives with the
-// wire types: apiproxy's sessions contract declares it, and client-runtime's
-// api-remotes import already places it in every client program.
+// The `imageLimits`/`documentLimits` projection key merges (intake pre-check)
+// arrive with the wire types: apiproxy's sessions contract declares them, and
+// client-runtime's api-remotes import already places them in every client
+// program.
 import type { Translate } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ComposerBarProps } from '../contract/slots.ts'
+import { documentMediaType } from '../document-media.ts'
 import { ComposerContentEditable } from '../input/editor/ComposerContentEditable.tsx'
 import { DecoratorPortals } from '../input/editor/DecoratorPortals.tsx'
 import { registerComposerKeymap } from '../input/editor/keymap.ts'
@@ -92,6 +94,8 @@ export const InputBar = memo(function InputBar({
   // The deployment's image-intake limits (absent while no attachment service
   // is composed — the pre-check below then defers entirely to the host).
   const imageLimits = useProjection('imageLimits')
+  // The deployment's document-intake limits; the same absent-means-defer rule.
+  const documentLimits = useProjection('documentLimits')
   // Prompt failures are ordinary failures (no create/attach transaction exists
   // anymore): the toast announces promptError, the draft stays in the machine,
   // and the user resubmits. A remount over a session whose machine still holds
@@ -104,9 +108,9 @@ export const InputBar = memo(function InputBar({
     if (promptError === null) return
     const { error } = promptError
     showToast(error.code === 'session/attachment-invalid' || error.code === 'subagent/attachment-invalid'
-      ? attachmentErrorText(t, error.details.reason, imageLimits)
+      ? attachmentErrorText(t, error.details.reason, imageLimits, documentLimits)
       : `${error.message} (${error.code})`)
-  }, [promptError, showToast, t, imageLimits])
+  }, [promptError, showToast, t, imageLimits, documentLimits])
   useEffect(() => {
     if (notice?.level === 'error') showToast(notice.text)
   }, [notice, showToast])
@@ -222,12 +226,12 @@ export const InputBar = memo(function InputBar({
     return () => { el.removeEventListener('wheel', onWheel) }
   }, [])
 
-  // Intake pre-check: an addition that would break a projected image limit is
+  // Intake pre-check: an addition that would break a projected intake limit is
   // refused as a whole batch, announced immediately, and never enters the
-  // rail. Only the image subset is limit-checked: generic files carry no
-  // client-side size or count limit and upload as soon as they are picked.
-  // The host enforces the same image limits at submit for callers that bypass
-  // this composer.
+  // rail. Images and documents are each checked against their own projected
+  // limits; generic files carry no client-side size or count limit and upload
+  // as soon as they are picked. The host enforces the same limits at submit
+  // for callers that bypass this composer.
   const intakeFiles = useCallback((files: readonly File[]): void => {
     if (subagent !== null || addFiles === undefined || files.length === 0) return
     const rejected = ((): string | null => {
@@ -247,10 +251,27 @@ export const InputBar = memo(function InputBar({
           return t('image.totalTooLarge', { size: imageSizeText(imageLimits.maxMessageImageBytes) })
         }
       }
+      // The document subset is the classifier's own answer, so the pre-check
+      // and draft intake can never disagree about which files it covers.
+      if (documentLimits !== undefined) {
+        const documents = files.filter(file => documentMediaType(file) !== undefined)
+        const documentAttachments = attachments.filter(attachment => attachment.kind === 'document')
+        if (documentAttachments.length + documents.length > documentLimits.maxDocumentsPerMessage) {
+          return t('document.tooMany', { count: documentLimits.maxDocumentsPerMessage })
+        }
+        if (documents.some(file => file.size > documentLimits.maxDocumentBytes)) {
+          return t('document.fileTooLarge', { size: imageSizeText(documentLimits.maxDocumentBytes) })
+        }
+        const total = documentAttachments.reduce((sum, attachment) => sum + attachment.file.size, 0)
+          + documents.reduce((sum, file) => sum + file.size, 0)
+        if (total > documentLimits.maxMessageDocumentBytes) {
+          return t('document.totalTooLarge', { size: imageSizeText(documentLimits.maxMessageDocumentBytes) })
+        }
+      }
       return addFiles(files)
     })()
     if (rejected !== null) showToast(rejected)
-  }, [subagent, addFiles, attachments, imageLimits, showToast, t])
+  }, [subagent, addFiles, attachments, imageLimits, documentLimits, showToast, t])
 
   const canAcceptDrop = subagent === null && !locked && !machineBusy && addFiles !== undefined
 

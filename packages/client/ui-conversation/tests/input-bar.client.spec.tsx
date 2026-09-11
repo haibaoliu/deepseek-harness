@@ -70,6 +70,18 @@ interface BenchOptions {
     maxImageDimension: number
     mediaTypes: readonly ('image/png' | 'image/jpeg' | 'image/webp' | 'image/gif')[]
   }
+  /** The `documentLimits` projection value (absent = no document pre-check). */
+  documentLimits?: {
+    maxDocumentBytes: number
+    maxDocumentsPerMessage: number
+    maxMessageDocumentBytes: number
+    mediaTypes: readonly (
+      | 'text/markdown'
+      | 'application/pdf'
+      | 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+      | 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+    )[]
+  }
   draft?: string
   running?: boolean
   subagent?: Exclude<SessionSnapshot['subagent'], null>
@@ -183,7 +195,8 @@ function bench(over?: BenchOptions) {
         ? over?.permissions
         : key === 'plan' ? over?.plan
           : key === 'goal' ? over?.goal
-            : key === 'imageLimits' ? over?.imageLimits : undefined)),
+            : key === 'imageLimits' ? over?.imageLimits
+              : key === 'documentLimits' ? over?.documentLimits : undefined)),
     useInput: bindSnapshotSelector(shell.state),
     inputActions: shell.actions,
     keyboard: shell,
@@ -373,6 +386,63 @@ describe('image draft rail', () => {
     expect(within.view.queryByRole('alert')).toBeNull()
   })
 
+  it('pre-checks projected document limits at intake and keeps refused documents off the rail', () => {
+    const limits = {
+      maxDocumentBytes: 1024 * 1024,
+      maxDocumentsPerMessage: 2,
+      maxMessageDocumentBytes: 2 * 1024 * 1024,
+      mediaTypes: ['application/pdf'] as const,
+    }
+    const pdf = (bytes: number, name = 'paper.pdf') =>
+      new File([new ArrayBuffer(bytes)], name, { type: 'application/pdf' })
+    const intake = (result: ReturnType<typeof bench>, files: File[]) => {
+      act(() => { attachmentOwner(result.slotCalls).onAddFiles(files) })
+    }
+    // Count: three at once over a two-document limit → the whole batch refused.
+    const overCount = bench({ addFiles: vi.fn(() => null), documentLimits: limits })
+    intake(overCount, [pdf(8, 'a.pdf'), pdf(8, 'b.pdf'), pdf(8, 'c.pdf')])
+    expect(overCount.view.getByRole('alert').textContent).toContain('一条消息最多添加 2 个文档')
+    expect(overCount.props.addFiles).not.toHaveBeenCalled()
+    cleanup()
+    // Per-file bytes.
+    const overFile = bench({ addFiles: vi.fn(() => null), documentLimits: limits })
+    intake(overFile, [pdf(1024 * 1024 + 1, 'big.pdf')])
+    expect(overFile.view.getByRole('alert').textContent).toContain('单个文档不能超过 1MB')
+    expect(overFile.props.addFiles).not.toHaveBeenCalled()
+    cleanup()
+    // The extension fallback classifies too: a MIME-less document is checked.
+    const noMime = bench({ addFiles: vi.fn(() => null), documentLimits: limits })
+    intake(noMime, [new File([new ArrayBuffer(1024 * 1024 + 1)], 'slides.pptx', { type: '' })])
+    expect(noMime.view.getByRole('alert').textContent).toContain('单个文档不能超过 1MB')
+    expect(noMime.props.addFiles).not.toHaveBeenCalled()
+    cleanup()
+    // Aggregate bytes across the existing rail plus the new batch.
+    const held = new File([new ArrayBuffer(1024 * 1024 * 1.5)], 'held.pdf', { type: 'application/pdf' })
+    const attachment = {
+      kind: 'document' as const,
+      id: 'draft-doc' as DraftAttachmentId,
+      file: held,
+      mediaType: 'application/pdf' as const,
+    }
+    const overTotal = bench({ addFiles: vi.fn(() => null), documentLimits: limits, attachments: [attachment] })
+    intake(overTotal, [pdf(1024 * 1024, 'more.pdf')])
+    expect(overTotal.view.getByRole('alert').textContent).toContain('文档总大小超过 2MB')
+    expect(overTotal.props.addFiles).not.toHaveBeenCalled()
+    cleanup()
+    // Generic files stay unchecked: they carry no client-side size limit.
+    const generic = bench({ addFiles: vi.fn(() => null), documentLimits: limits })
+    const binary = new File([new ArrayBuffer(8 * 1024 * 1024)], 'archive.bin', { type: 'application/octet-stream' })
+    intake(generic, [binary])
+    expect(generic.props.addFiles).toHaveBeenCalledWith([binary])
+    cleanup()
+    // Within every limit: the batch passes through to addFiles.
+    const within = bench({ addFiles: vi.fn(() => null), documentLimits: limits })
+    const fits = pdf(16, 'fits.pdf')
+    intake(within, [fits])
+    expect(within.props.addFiles).toHaveBeenCalledWith([fits])
+    expect(within.view.queryByRole('alert')).toBeNull()
+  })
+
   it('announces the format problem before any limit when the batch holds a non-image', () => {
     const addFiles = vi.fn(() => '仅支持 PNG、JPG、WebP、GIF 格式的图片')
     const result = bench({
@@ -421,6 +491,19 @@ describe('image draft rail', () => {
     cleanup()
     const unknown = bench({ promptError: attachmentError('ATTACHMENT_NOT_REFERENCED') })
     expect(unknown.view.getByRole('alert').textContent).toContain('图片发送失败（ATTACHMENT_NOT_REFERENCED）')
+    cleanup()
+    // A document rejection reads as document copy, never as the image line.
+    const documentLimits = {
+      maxDocumentBytes: 25 * 1024 * 1024,
+      maxDocumentsPerMessage: 10,
+      maxMessageDocumentBytes: 100 * 1024 * 1024,
+      mediaTypes: ['application/pdf'] as const,
+    }
+    const document = bench({ documentLimits, promptError: attachmentError('DOCUMENT_TOO_LARGE') })
+    expect(document.view.getByRole('alert').textContent).toContain('单个文档不能超过 25MB')
+    cleanup()
+    const documentFormat = bench({ promptError: attachmentError('UNSUPPORTED_DOCUMENT_TYPE') })
+    expect(documentFormat.view.getByRole('alert').textContent).toContain('仅支持 Markdown、PDF、DOCX、PPTX 格式的文档')
     cleanup()
     // A subagent refusal uses the same product copy for the same reason.
     const subagent = bench({

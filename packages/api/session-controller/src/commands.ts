@@ -1,6 +1,6 @@
 /** Session commands whose activation policy is explicit at each Remote method. */
 
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { brandString } from '@deepseek-ai/dsh-brand'
@@ -106,7 +106,7 @@ export class SessionCommandController {
       ?? request.cwd
       ?? (this.temporarySessionRoot === undefined
         ? this.defaultCwd
-        : join(this.temporarySessionRoot, randomUUID()))
+        : join(this.temporarySessionRoot, temporarySessionDirectoryName(sessionId)))
     let adopted: Agent
     try {
       adopted = await this.agents.ensureSession(
@@ -616,6 +616,19 @@ function decodeDocumentBase64(data: string): Uint8Array {
     throw new AttachmentError('Document upload is not canonical base64.', 'INVALID_DOCUMENT')
   }
   return new Uint8Array(decoded)
+}
+
+/**
+ * Deterministic scratch-directory leaf for one workspace-less Session. The
+ * session id is caller-supplied, so it is hashed rather than joined directly,
+ * and hashing is what keeps creation idempotent: a repeated
+ * `session.create({ sessionId })` for a session that already exists resolves the
+ * same directory again instead of failing its persisted-cwd check.
+ * @param sessionId - the Session identity the scratch directory belongs to.
+ * @returns a stable 32-hex-character directory name.
+ */
+function temporarySessionDirectoryName(sessionId: SessionId): string {
+  return createHash('sha256').update(String(sessionId)).digest('hex').slice(0, 32)
 }
 
 /** Render one extracted document as model-visible text, headed by its display name. */

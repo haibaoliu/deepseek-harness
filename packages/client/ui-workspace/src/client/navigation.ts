@@ -89,6 +89,8 @@ export class DirectoryBrowseError extends Error {
 /** Implements Workspace archive and directory UI operations. */
 class UiWorkspaceService extends Service implements UiWorkspace {
   private readonly connecting = new Map<WorkspaceId, Promise<SessionId>>()
+  /** In-flight un-scoped New Session creation; later clicks join it. */
+  private temporarySession: Promise<SessionId> | undefined
   private readonly lifetime = new AbortController()
 
   /**
@@ -156,7 +158,8 @@ class UiWorkspaceService extends Service implements UiWorkspace {
    * workspace-scoped call (the workspace browser's row action) connects that
    * Workspace's blank Session. The un-scoped sidebar button opens a
    * workspace-less temporary Session instead, reusing an existing blank
-   * ungrouped Session so repeated clicks do not accumulate empty rows.
+   * ungrouped Session and coalescing concurrent clicks into one creation so
+   * repeated presses do not accumulate empty rows.
    * Failures are non-fatal (console diagnostics; the current view stays
    * usable).
    * @param workspaceId - explicit target Workspace for scoped actions.
@@ -170,25 +173,36 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     }
     const workspace = this.workspaces.list.getSnapshot()
     const sessions = this.sessions.list.getSnapshot()
-    // Ungrouped = owned by no Workspace. A subagent Session never counts: it is
-    // an addressed child, not a chat the sidebar button starts.
-    const grouped = new Set(workspace.items.flatMap(item => item.sessionIds))
-    const existingBlank = sessions.ids.find((id) => {
-      const summary = sessions.byId[id]
-      return summary !== undefined
-        && summary.blank
-        && summary.origin !== 'subagent'
-        && !grouped.has(id)
-        && !workspace.archivedSessionIds.includes(id)
-    })
-    if (existingBlank !== undefined) {
-      this.openSession(existingBlank)
-      return
+    // Only a ready Workspace list proves which Sessions are ungrouped: before
+    // it arrives a blank Workspace member could be mistaken for a temporary one.
+    if (workspace.phase === 'ready') {
+      // Ungrouped = owned by no Workspace. A subagent Session never counts: it
+      // is an addressed child, not a chat the sidebar button starts.
+      const grouped = new Set(workspace.items.flatMap(item => item.sessionIds))
+      const existingBlank = sessions.ids.find((id) => {
+        const summary = sessions.byId[id]
+        return summary !== undefined
+          && summary.blank
+          && summary.origin !== 'subagent'
+          && !grouped.has(id)
+          && !workspace.archivedSessionIds.includes(id)
+      })
+      if (existingBlank !== undefined) {
+        this.openSession(existingBlank)
+        return
+      }
     }
-    void this.sessions.create({}).then(
-      (sessionId) => { this.openSession(sessionId) },
-      (reason: unknown) => { console.warn('new temporary session failed:', reason) },
-    )
+    // One creation serves every click until it settles, so repeated presses do
+    // not accumulate empty temporary rows; the initiating click owns the open.
+    if (this.temporarySession === undefined) {
+      const attempt = this.sessions.create({})
+        .finally(() => { this.temporarySession = undefined })
+      this.temporarySession = attempt
+      void attempt.then(
+        (sessionId) => { this.openSession(sessionId) },
+        (reason: unknown) => { console.warn('new temporary session failed:', reason) },
+      )
+    }
   }
 
   async archiveSession(sessionId: SessionId): Promise<void> {

@@ -80,6 +80,23 @@ describe('workspace-less temporary Session isolation', () => {
     expect(secondCwd).not.toBe(firstCwd)
   })
 
+  it('resolves the same scratch directory when the same Session is created twice', async () => {
+    const root = tempDir('dsh-temporary-idempotent-')
+    const temporarySessionRoot = join(root, 'tmp-sessions')
+    const { ctx, remote } = await harness(temporarySessionRoot)
+
+    const first = await remote.create({ sessionId: SessionId('tmp-same') })
+    expect(first.ok).toBe(true)
+    const firstCwd = ctx.sessions.get(SessionId('tmp-same'))?.header.cwd
+    expect(firstCwd?.startsWith(`${temporarySessionRoot}/`)).toBe(true)
+
+    // A repeated create for a live Session must adopt it, so the scratch
+    // directory is derived from the identity instead of being regenerated.
+    const second = await remote.create({ sessionId: SessionId('tmp-same') })
+    expect(second.ok).toBe(true)
+    expect(ctx.sessions.get(SessionId('tmp-same'))?.header.cwd).toBe(firstCwd)
+  })
+
   it('honors an explicit cwd and keeps the shared default without a scratch root', async () => {
     const { ctx, remote, cwd } = await harness()
     const explicit = join(cwd, 'explicit')

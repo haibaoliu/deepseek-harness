@@ -361,4 +361,14 @@ describe('local attachment store', () => {
     await expect(readDocumentFile(missingRoot, saved.ref))
       .rejects.toMatchObject({ code: 'ATTACHMENT_NOT_FOUND' })
   })
+
+  it('refuses a document whose declared type the deployment does not accept', async () => {
+    const storageRoot = await root()
+    const pdfOnly: DocumentAttachmentLimits = { ...DOCUMENT_LIMITS, mediaTypes: ['application/pdf'] }
+    await expect(validateDocumentFile({ data: MARKDOWN, mediaType: 'text/markdown' }, pdfOnly))
+      .rejects.toMatchObject({ code: 'UNSUPPORTED_DOCUMENT_TYPE' })
+    await expect(saveDocumentFile(storageRoot, { data: MARKDOWN, mediaType: 'text/markdown' }, pdfOnly))
+      .rejects.toMatchObject({ code: 'UNSUPPORTED_DOCUMENT_TYPE' })
+    await expect(readdir(storageRoot)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
 })

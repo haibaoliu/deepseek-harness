@@ -12,6 +12,26 @@ function docx(runs: string[]): Uint8Array {
   return zipSync({ 'word/document.xml': strToU8(`<w:document>${paragraphs}</w:document>`) })
 }
 
+/**
+ * Rewrite one central-directory entry's declared uncompressed size without
+ * inflating megabytes of fixture data: the reader trusts the directory, so a
+ * tiny container can still declare an extraction far past its encoded size.
+ */
+function forgeDeclaredSize(zip: Uint8Array, name: string, declaredBytes: number): Uint8Array {
+  const out = Uint8Array.from(zip)
+  const view = new DataView(out.buffer, out.byteOffset, out.byteLength)
+  const nameBytes = strToU8(name)
+  for (let at = 0; at + 46 <= out.byteLength; at += 1) {
+    if (view.getUint32(at, true) !== 0x02014b50) continue
+    const nameLength = view.getUint16(at + 28, true)
+    const candidate = out.subarray(at + 46, at + 46 + nameLength)
+    if (candidate.length !== nameBytes.length || !candidate.every((byte, index) => byte === nameBytes[index])) continue
+    view.setUint32(at + 24, declaredBytes, true)
+    return out
+  }
+  throw new Error(`central-directory entry not found: ${name}`)
+}
+
 /** Build a minimal single-page PDF whose content stream draws `text` with Helvetica. */
 function pdf(text: string): Uint8Array {
   const stream = `BT /F1 12 Tf 72 720 Td (${text}) Tj ET`
@@ -82,18 +102,34 @@ describe('document inspection', () => {
 
   it('refuses a container whose text entries expand past the accepted size', async () => {
     // The encoded input stays tiny while the declared extracted size does not.
-    const bomb = zipSync({ 'word/document.xml': new Uint8Array(65 * 1024 * 1024) })
+    const bomb = forgeDeclaredSize(docx(['a']), 'word/document.xml', 65 * 1024 * 1024)
     expect(bomb.byteLength).toBeLessThan(1024 * 1024)
     await expect(detectDocument(bomb, DOCX)).rejects.toMatchObject({ code: 'DOCUMENT_TOO_LARGE' })
     await expect(extractDocumentText(bomb, DOCX)).rejects.toMatchObject({ code: 'DOCUMENT_TOO_LARGE' })
   })
 
   it('never decompresses entries outside the text vocabulary', async () => {
-    const withMedia = zipSync({
-      'word/document.xml': strToU8('<w:document><w:p><w:r><w:t>kept</w:t></w:r></w:p></w:document>'),
-      'word/media/image1.bin': new Uint8Array(65 * 1024 * 1024),
-    })
+    const withMedia = forgeDeclaredSize(
+      zipSync({
+        'word/document.xml': strToU8('<w:document><w:p><w:r><w:t>kept</w:t></w:r></w:p></w:document>'),
+        'word/media/image1.bin': strToU8('x'),
+      }),
+      'word/media/image1.bin',
+      65 * 1024 * 1024,
+    )
     await expect(extractDocumentText(withMedia, DOCX)).resolves.toBe('kept')
+  })
+
+  it('refuses a container that declares more entries than the inspection cap', async () => {
+    // fflate consults the filter once per declared central-directory entry, so
+    // an unbounded entry count spins before any byte-size check is reached.
+    const entries: Record<string, Uint8Array> = {
+      'word/document.xml': strToU8('<w:document/>'),
+    }
+    for (let index = 0; index < 4200; index += 1) {
+      entries[`word/media/part${String(index)}.bin`] = Uint8Array.of(index & 0xff)
+    }
+    await expect(detectDocument(zipSync(entries), DOCX)).rejects.toMatchObject({ code: 'INVALID_DOCUMENT' })
   })
 
   it('exhausts every document media type through the extractor', async () => {
@@ -101,6 +137,7 @@ describe('document inspection', () => {
       [new TextEncoder().encode('md'), 'text/markdown'],
       [docx(['a']), DOCX],
       [pptx([['a']]), PPTX],
+      [pdf('a'), PDF],
     ]
     for (const [data, mediaType] of cases) {
       await expect(extractDocumentText(data, mediaType)).resolves.toBeTypeOf('string')
